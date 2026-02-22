@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"
       - run: uv sync --extra dev-tools
       - run: uv run ruff check steerling/ tests/ examples/ scripts/
       - run: uv run ruff format --check steerling/ tests/ examples/ scripts/
@@ -21,6 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"
       - run: uv sync --extra dev-tools
       - run: uv run ty check steerling/
 
@@ -29,5 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"
       - run: uv sync --extra test
       - run: uv run pytest tests/ -v --tb=short
