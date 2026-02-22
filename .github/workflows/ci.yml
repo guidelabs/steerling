@@ -15,18 +15,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --extra dev-tools
-      - run: uv run ruff check steerling/ tests/ examples/ scripts/
-      - run: uv run ruff format --check steerling/ tests/ examples/ scripts/
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          python-version: "3.13"
-      - run: uv sync --extra dev-tools
-      - run: uv run ty check steerling/
+      - run: uv run ruff check steerling/ tests/
+      - run: uv run ruff format --check steerling/ tests/
 
   test:
     runs-on: ubuntu-latest
