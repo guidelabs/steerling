@@ -15,11 +15,14 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from torch.nn.attention.flex_attention import flex_attention
 
+import steerling.models.layers.causal_diffusion_layers as layers
 from steerling.configs.causal_diffusion import CausalDiffusionConfig
 from steerling.configs.concept import ConceptConfig
 from steerling.configs.generation import GenerationConfig
 from steerling.data.tokenizer import SteerlingTokenizer
+from steerling.inference.checkpoint_utils import load_config, load_state_dict
 from steerling.models.causal_diffusion import CausalDiffusionLM
 from steerling.models.interpretable.interpretable_causal_diffusion import (
     InterpretableCausalDiffusionLM,
@@ -108,7 +111,6 @@ class SteerlingGenerator:
         Returns:
             SteerlingGenerator ready for inference
         """
-        from steerling.inference.checkpoint_utils import load_config, load_state_dict
 
         # Load config
         raw_config = load_config(model_name_or_path)
@@ -157,14 +159,17 @@ class SteerlingGenerator:
 
         # Restore weight tying if needed
         if hasattr(model, "transformer"):
-            model.transformer._restore_weight_tying()
+            model.transformer._restore_weight_tying()  # type: ignore
         elif hasattr(model, "_restore_weight_tying"):
-            model._restore_weight_tying()
+            model._restore_weight_tying()  # type: ignore
 
         # Cast dtype
         if dtype is not None:
             model = model.to(dtype=dtype)
             logger.info(f"Cast model to {dtype}")
+
+        # Workaround: disable compiled flex_attention to avoid Triton kernel errors
+        layers.compiled_flex_attention = flex_attention
 
         generator = cls(
             model=model,
@@ -373,7 +378,7 @@ class SteerlingGenerator:
             def hook_fn(module, input, output):
                 hidden_states["hidden"] = output
 
-            handle = self.model.ln_f.register_forward_hook(hook_fn)
+            handle = self.model.ln_f.register_forward_hook(hook_fn)  # type: ignore
             try:
                 _ = self.model(x)
             finally:
