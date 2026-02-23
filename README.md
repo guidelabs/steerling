@@ -1,6 +1,6 @@
 # Steerling
 
-**An interpretable causal diffusion language model.**
+An interpretable causal diffusion language model.
 
 Steerling-8B combines masked diffusion language modeling with concept decomposition, enabling:
 - **Generation**: Non-autoregressive text generation via confidence-based unmasking
@@ -76,11 +76,11 @@ pip install -e ".[all]"
   Stay tuned.
 
 - **Is training code available?**\
-  This release is inference-only. Training code is not included. If you're interested in training or fine-tuning, please reach out to Guide Labs.
+  This release is inference-only, so the training code is not included. If you're interested in training or fine-tuning, please reach out to info@guidelabs.ai.
 
 
 - **What dataset did you train on?**\
-  We trained on an augmented version of the Nemontron-cc-hq data for a total of about 1.3 Trillion tokens.
+  We trained on an augmented version of the Nemontron-cc-hq data for a total of about 1.35 Trillion tokens.
 
 - **What is block-causal attention?**\
   Standard causal attention only lets each token attend to previous tokens. Block-causal attention groups tokens into blocks of say 64 and allows bidirectional attention within each block, while maintaining causal ordering across blocks. This gives the model local bidirectional context while preserving the ability to generate sequentially. Refer to this post: [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/), for more details.
@@ -92,17 +92,13 @@ pip install -e ".[all]"
   - Together they reconstruct the full hidden state with an error: `hidden ≈ known_features + unknown_features + epsilon`.
 
 - **How do I find concept IDs for steering?**\
-  The concept metadata is in `concepts/complete_concept_info.csv` (shipped with the HuggingFace model). Each row maps a concept ID to its description. Use positive values to amplify a concept and negative values to suppress it:
-  ```python
-  config = GenerationConfig(steer_known={concept_id: 2.0})   # amplify
-  config = GenerationConfig(steer_known={concept_id: -1.0})  # suppress
-  ```
+  Over the coming weeks, we will provide a full-scale workthrough of how to extract and steer Steerling-8B.
 
 - **What GPU do I need?**\
-  Steerling-8B in bfloat16 requires approximately 18GB VRAM. It fits on a single H100, A100 (40GB or 80GB), A6000 (48GB), or RTX 4090 (24GB). It does not fit on consumer GPUs with 16GB or less.
+  Steerling-8B in bfloat16 requires approximately 18GB VRAM. It fits on a single H100, A100 (40GB or 80GB), A6000 (48GB), or RTX 4090 (24GB).
 
 - **Can I fine-tune this model?**\
-  Yes. However, we have not included finetuning code with this package. Steerling is an inference-only release; if there is increasing request, we will support fine-tuning in a future release.
+  Yes. However, we have not included finetuning code with this package. It is currently an inference-only release; if there is increasing request, we will support fine-tuning in a future release.
 
 - **What tokenizer does Steerling-8B use?**\
   Steerling uses OpenAI's `cl100k_base` tokenizer (via tiktoken) with 4 additional special tokens: `<|pad|>`, `<|bos|>`, `<|endofchunk|>`, and `<|mask|>`, for a total vocabulary of 100,281 tokens.

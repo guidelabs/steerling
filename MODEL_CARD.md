@@ -36,25 +36,6 @@ text = generator.generate(
 print(text)
 ```
 
-Concept IDs and descriptions are available in `concepts/complete_concept_info.csv`.
-
-## Concept Attribution
-
-Inspect which concepts contribute to model predictions:
-
-```python
-import torch
-
-input_ids = torch.tensor(
-    [generator.tokenizer.encode("Machine learning predicts protein structures")],
-    device=generator.device,
-)
-
-logits, outputs = generator.model(input_ids, use_teacher_forcing=False, minimal_output=False)
-print(f"Top-k known concepts: {outputs.known_topk_indices.shape}")
-print(f"Known features norm: {outputs.known_features.norm(dim=-1).mean():.3f}")
-```
-
 ## Model Details
 
 | Property | Value |
