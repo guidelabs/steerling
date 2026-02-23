@@ -38,7 +38,6 @@ print(text)
 | Unknown Concepts | 101,196 |
 | GQA | 32 heads, 4 KV heads |
 | Precision | bfloat16 |
-| License | Apache 2.0 |
 
 ## Architecture
 
