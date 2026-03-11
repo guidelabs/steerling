@@ -47,6 +47,10 @@ Steerling uses block-causal attention (bidirectional within 64-token blocks, cau
 h → known_features + unk_hat + epsilon = composed → lm_head → logits
 ```
 
+<p align="center">
+  <img src="imgs/embedding_decomposition.apng" width="80%" alt="Embedding decomposition animation" />
+</p>
+
 - `known_features`: Weighted sum of top-k learned concept embeddings
 - `unk_hat`: Residual features captured by a factorized unknown head
 - `epsilon`: Small correction term for reconstruction fidelity
@@ -57,15 +61,35 @@ h → known_features + unk_hat + epsilon = composed → lm_head → logits
 # From PyPI
 pip install steerling
 
-# From source
+# From source (with uv)
 git clone https://github.com/guidelabs/steerling.git
 cd steerling
+uv pip install -e ".[dev]"
+
+# From source (with pip)
 pip install -e ".[dev]"
 
-# With evaluation support
-pip install -e ".[all]"
+# Evaluation dependencies only
+pip install -e ".[eval]"
 ```
 
+## Evaluation
+
+We provide evaluation scripts based on [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness).
+
+```bash
+# Run all benchmarks (HellaSwag, ARC-Challenge, WinoGrande, PIQA, OpenBookQA, MMLU, GSM8K)
+bash scripts/eval_steerling_lm_eval.sh
+
+# Specify a model path
+MODEL_PATH=/path/to/local/model bash scripts/eval_steerling_lm_eval.sh
+
+# Run specific tasks
+TASKS="hellaswag arc_challenge" bash scripts/eval_steerling_lm_eval.sh
+
+# Or use the Python CLI directly
+python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_challenge
+```
 
 ## FAQ
 
@@ -78,12 +102,11 @@ pip install -e ".[all]"
 - **Is training code available?**\
   This release is inference-only, so the training code is not included. If you're interested in training or fine-tuning, please reach out to info@guidelabs.ai.
 
-
 - **What dataset did you train on?**\
   We trained on an augmented version of the Nemontron-cc-hq data for a total of about 1.35 Trillion tokens.
 
 - **What is block-causal attention?**\
-  Standard causal attention only lets each token attend to previous tokens. Block-causal attention groups tokens into blocks of say 64 and allows bidirectional attention within each block, while maintaining causal ordering across blocks. This gives the model local bidirectional context while preserving the ability to generate sequentially. Refer to this post: [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/), for more details.
+  Standard causal attention only lets each token attend to previous tokens. Block-causal attention groups tokens into blocks of 64 and allows bidirectional attention within each block, while maintaining causal ordering across blocks. This gives the model local bidirectional context while preserving the ability to generate sequentially. Refer to this post: [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/), for more details.
 
 - **What are "known" and "unknown" concepts?**\
   The model decomposes its internal representations into two parts:
@@ -92,7 +115,7 @@ pip install -e ".[all]"
   - Together they reconstruct the full hidden state with an error: `hidden ≈ known_features + unknown_features + epsilon`.
 
 - **How do I find concept IDs for steering?**\
-  Over the coming weeks, we will provide a full-scale workthrough of how to extract and steer Steerling-8B.
+  Over the coming weeks, we will provide a full-scale walkthrough of how to extract and steer Steerling-8B.
 
 - **What GPU do I need?**\
   Steerling-8B in bfloat16 requires approximately 18GB VRAM. It fits on a single H100, A100 (40GB or 80GB), A6000 (48GB), or RTX 4090 (24GB).
@@ -107,12 +130,11 @@ pip install -e ".[all]"
   Not directly, Steerling uses a custom architecture (block-causal attention, concept heads) that isn't in the transformers library. Use the `steerling` package instead, which provides `SteerlingGenerator.from_pretrained()` with a similar interface.
 
 - **How do I get training data attributions?**\
-This release is a light-weight version of the pipeline, so it doesn't directly support training data attribution. We have provided notebooks to enable concept, and feature attributions. If you're interested in supporting training data attribution, please reach out to Guide Labs.
-
+  This release is a light-weight version of the pipeline, so it doesn't directly support training data attribution. We have provided notebooks to enable concept and feature attributions. If you're interested in supporting training data attribution, please reach out to Guide Labs.
 
 ## License
 
-The Steerling source code is released under the  [Apache License 2.0](LICENSE).
+The Steerling source code is released under the [Apache License 2.0](LICENSE).
 
 The model weights are provided for research and evaluation purposes.
 The weights were trained on datasets with varying license terms, including

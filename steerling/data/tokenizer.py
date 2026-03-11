@@ -77,12 +77,13 @@ class SteerlingTokenizer:
             tokens = [self._bos_token_id] + tokens + [self._eos_token_id]
         return tokens
 
-    def decode(self, tokens: list[int] | np.ndarray | torch.Tensor) -> str:
+    def decode(self, tokens: list[int] | np.ndarray | torch.Tensor, skip_special_tokens: bool = True) -> str:
         """
-        Decode token IDs to text. Automatically filters special tokens.
+        Decode token IDs to text.
 
         Args:
             tokens: Token IDs (list, numpy array, or torch tensor)
+            skip_special_tokens: If True, filter out special tokens before decoding
 
         Returns:
             Decoded text
@@ -93,7 +94,10 @@ class SteerlingTokenizer:
         if isinstance(tokens, np.ndarray):
             tokens = tokens.tolist()
 
-        tokens = [int(t) for t in tokens if int(t) not in self._special_token_ids]
+        if skip_special_tokens:
+            tokens = [int(t) for t in tokens if int(t) not in self._special_token_ids]
+        else:
+            tokens = [int(t) for t in tokens]
         return self._tokenizer.decode(tokens)
 
     @property

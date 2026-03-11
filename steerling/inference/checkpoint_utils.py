@@ -20,10 +20,15 @@ from safetensors.torch import load_file
 
 logger = logging.getLogger(__name__)
 
+# Keys injected by HuggingFace that are not part of the model config
+HF_KEYS = {"model_type", "transformers_version", "auto_map", "architectures"}
+
 
 def load_config(model_name_or_path: str) -> dict:
     """
     Load config.json from a local directory or HuggingFace Hub.
+
+    Strips HuggingFace-specific keys before returning.
 
     Returns:
         Parsed config dictionary
@@ -37,7 +42,12 @@ def load_config(model_name_or_path: str) -> dict:
         config_file = Path(hf_hub_download(model_name_or_path, "config.json"))
 
     with open(config_file) as f:
-        return json.load(f)
+        config = json.load(f)
+
+    for key in HF_KEYS:
+        config.pop(key, None)
+
+    return config
 
 
 def load_state_dict(model_name_or_path: str) -> dict[str, torch.Tensor]:

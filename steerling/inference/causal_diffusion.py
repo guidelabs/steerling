@@ -2,25 +2,25 @@
 Steerling text generator.
 
 Main user-facing API for:
-- Text generation (confidence-based unmasking)
-- Concept steering (intervene on concept activations)
+- Text generation (confidence-based block unmasking)
 - Embedding extraction
 """
 
 from __future__ import annotations
 
 import logging
-import math
-from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.attention.flex_attention import flex_attention
+
+from transformers import AutoModel
 
 import steerling.models.layers.causal_diffusion_layers as layers
 from steerling.configs.causal_diffusion import CausalDiffusionConfig
 from steerling.configs.concept import ConceptConfig
-from steerling.configs.generation import GenerationConfig
 from steerling.data.tokenizer import SteerlingTokenizer
 from steerling.inference.checkpoint_utils import load_config, load_state_dict
 from steerling.models.causal_diffusion import CausalDiffusionLM
@@ -31,29 +31,45 @@ from steerling.models.interpretable.interpretable_causal_diffusion import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class GenerationOutput:
-    """Output from generation."""
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    text: str
-    tokens: torch.Tensor
-    prompt_tokens: int
-    generated_tokens: int
+
+def _add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    """Gumbel-max sampling for categorical distributions (float64 for quality)."""
+    if temperature == 0:
+        return logits
+    logits = logits.to(torch.float64)
+    noise = torch.rand_like(logits, dtype=torch.float64)
+    gumbel_noise = (-torch.log(noise)) ** temperature
+    return logits.exp() / gumbel_noise
+
+
+def _get_num_transfer_tokens(mask_index: torch.Tensor, steps: int) -> torch.Tensor:
+    """Precompute how many tokens to unmask at each step (linear schedule)."""
+    mask_num = mask_index.sum(dim=1, keepdim=True)
+    base = mask_num // steps
+    remainder = mask_num % steps
+
+    num_transfer = base.new_zeros(mask_num.size(0), steps) + base
+    for i in range(mask_num.size(0)):
+        num_transfer[i, : remainder[i]] += 1
+
+    return num_transfer
 
 
 class SteerlingGenerator:
     """
     Generator for Steerling models.
 
-    Uses confidence-based unmasking by default, which produces better results
-    than left-to-right decoding by filling positions where the model is most
-    confident first.
+    Generates text by iteratively unmasking tokens block-by-block,
+    selecting the most confident positions first within each block.
 
     Example:
         generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b")
-
-        config = GenerationConfig(max_new_tokens=100, seed=42)
-        text = generator.generate("Once upon a time", config)
+        out = generator.generate("Once upon a time", gen_length=128, steps=128)
+        print(generator.decode(out))
     """
 
     def __init__(
@@ -79,7 +95,6 @@ class SteerlingGenerator:
         self.diff_block_size = model_config.diff_block_size
 
         logger.info(f"SteerlingGenerator initialized on {self.device}")
-        logger.info(f"Interpretable: {is_interpretable}")
 
     def __repr__(self) -> str:
         params = sum(p.numel() for p in self.model.parameters())
@@ -92,6 +107,10 @@ class SteerlingGenerator:
             f")"
         )
 
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+
     @classmethod
     def from_pretrained(
         cls,
@@ -102,34 +121,43 @@ class SteerlingGenerator:
         """
         Load a Steerling model from HuggingFace Hub or local directory.
 
-        Args:
-            model_name_or_path: HuggingFace repo ID (e.g. "guidelabs/steerling-8b")
-                or path to a local directory containing config.json + safetensors.
-            device: Device to load model on ("cuda" or "cpu")
-            dtype: Model dtype (default: bfloat16)
-
-        Returns:
-            SteerlingGenerator ready for inference
+        Tries AutoModel.from_pretrained first (works when the repo contains
+        HF-compatible modeling files with trust_remote_code). Falls back to
+        direct checkpoint loading for repos that only have safetensors + config.
         """
-
-        # Load config
         raw_config = load_config(model_name_or_path)
+        is_interpretable = raw_config.get("interpretable", False)
 
-        # Extract model fields only (config.json may contain tokenizer, concept, etc.)
         model_fields = set(CausalDiffusionConfig.model_fields.keys())
         model_data = {k: v for k, v in raw_config.items() if k in model_fields}
         model_config = CausalDiffusionConfig.model_validate(model_data)
 
-        # Determine if interpretable
-        is_interpretable = raw_config.get("interpretable", False)
-        concept_data = raw_config.get("concept")
-
-        # Vocab size from config or tokenizer default
-        vocab_size = raw_config.get("vocab_size", SteerlingTokenizer().vocab_size)
-
         tokenizer = SteerlingTokenizer()
 
-        # Create model
+        # --- Try AutoModel (HF-native path) ---
+        try:
+            hf_model = AutoModel.from_pretrained(
+                model_name_or_path,
+                trust_remote_code=True,
+                torch_dtype=dtype or torch.bfloat16,
+            )
+            logger.info("Loaded model via AutoModel.from_pretrained")
+            layers.compiled_flex_attention = flex_attention
+
+            return cls(
+                model=hf_model,
+                tokenizer=tokenizer,
+                model_config=model_config,
+                is_interpretable=is_interpretable,
+                device=device,
+            )
+        except Exception as e:
+            logger.info(f"AutoModel loading failed ({e}), falling back to direct checkpoint loading")
+
+        # --- Fallback: direct checkpoint loading ---
+        concept_data = raw_config.get("concept")
+        vocab_size = raw_config.get("vocab_size", tokenizer.vocab_size)
+
         if is_interpretable and concept_data is not None:
             concept_config = ConceptConfig.model_validate(concept_data)
             model: nn.Module = InterpretableCausalDiffusionLM(
@@ -143,12 +171,10 @@ class SteerlingGenerator:
                 vocab_size=vocab_size,
             )
 
-        # Load weights
         state_dict = load_state_dict(model_name_or_path)
 
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing:
-            # Weight tying may cause lm_head.weight to appear "missing"
             non_tying = [k for k in missing if "lm_head" not in k]
             if non_tying:
                 logger.warning(f"Missing keys (non-tying): {non_tying}")
@@ -157,182 +183,185 @@ class SteerlingGenerator:
         if unexpected:
             logger.warning(f"Unexpected keys: {unexpected}")
 
-        # Restore weight tying if needed
         if hasattr(model, "transformer"):
             model.transformer._restore_weight_tying()  # type: ignore
         elif hasattr(model, "_restore_weight_tying"):
             model._restore_weight_tying()  # type: ignore
 
-        # Cast dtype
         if dtype is not None:
             model = model.to(dtype=dtype)
             logger.info(f"Cast model to {dtype}")
 
-        # Workaround: disable compiled flex_attention to avoid Triton kernel errors
         layers.compiled_flex_attention = flex_attention
 
-        generator = cls(
+        return cls(
             model=model,
             tokenizer=tokenizer,
             model_config=model_config,
             is_interpretable=is_interpretable,
             device=device,
         )
-        return generator
 
-    @torch.inference_mode()
-    def generate(self, prompt: str, config: GenerationConfig) -> str:
-        """Generate text from a prompt. Returns generated text only."""
-        return self.generate_full(prompt, config).text
+    @classmethod
+    def from_model(
+        cls,
+        model: nn.Module,
+        tokenizer: SteerlingTokenizer,
+        device: str | torch.device = "cuda",
+    ) -> SteerlingGenerator:
+        """Wrap a pre-loaded model and tokenizer into a SteerlingGenerator."""
+        hf_config = getattr(model, "config", None)
 
-    @torch.inference_mode()
-    def generate_full(self, prompt: str, config: GenerationConfig) -> GenerationOutput:
+        if hf_config is not None:
+            config_dict = {k: v for k, v in hf_config.to_dict().items()
+                          if k in CausalDiffusionConfig.model_fields and k not in {"model_type", "transformers_version", "auto_map", "architectures"}}
+            model_config = CausalDiffusionConfig.model_validate(config_dict)
+            is_interpretable = getattr(hf_config, "interpretable", False)
+        else:
+            model_config = CausalDiffusionConfig()
+            is_interpretable = False
+
+        layers.compiled_flex_attention = flex_attention
+
+        return cls(
+            model=model,
+            tokenizer=tokenizer,
+            model_config=model_config,
+            is_interpretable=is_interpretable,
+            device=device,
+        )
+
+    # ------------------------------------------------------------------
+    # Generation
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def generate(
+        self,
+        prompt: str | torch.Tensor,
+        steps: int = 128,
+        gen_length: int = 128,
+        block_length: int | None = None,
+        temperature: float = 0.0,
+        cfg_scale: float = 0.0,
+        stop_tokens: list[int] | None = None,
+    ) -> torch.Tensor:
         """
-        Generate text with full output details using confidence-based unmasking.
+        Generate text via block-by-block confidence-based unmasking.
+
+        Within each block, tokens are unmasked over ``steps_per_block`` steps
+        using a linear schedule. At each step the most confident masked
+        positions are selected for unmasking. After completing a block, if
+        any stop token is present the remaining blocks are skipped.
 
         Args:
-            prompt: Input text prompt
-            config: Generation configuration
+            prompt: Input text string or token tensor of shape (B, L).
+            steps: Total denoising steps (split evenly across blocks).
+            gen_length: Number of tokens to generate (must be divisible by block_length).
+            block_length: Block size. Defaults to config diff_block_size.
+            temperature: Gumbel noise temperature (0 = greedy).
+            cfg_scale: Classifier-free guidance scale (0 = disabled).
+            stop_tokens: Token IDs that trigger early stop between blocks.
 
         Returns:
-            GenerationOutput with text, tokens, and counts
+            Full sequence tensor (prompt + generated), shape (B, L + gen_length).
         """
-        max_new_tokens = config.max_new_tokens
-        temperature = config.temperature
-        top_p = config.top_p
-        use_entropy_sampling = config.use_entropy_sampling
-        repetition_penalty = config.repetition_penalty
-        tokens_per_step = config.tokens_per_step
-        steer_known = config.steer_known
-        steer_unknown = config.steer_unknown
-
-        if config.seed is not None:
-            torch.manual_seed(config.seed)
-
-        # Tokenize prompt (no special tokens for generation)
-        prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
-        prompt_len = len(prompt_ids)
-        total_len = prompt_len + max_new_tokens
-
-        # Initialize sequence with mask tokens
+        if block_length is None:
+            block_length = self.diff_block_size
         mask_id = self.mask_token_id
-        x = torch.full((1, total_len), mask_id, dtype=torch.long, device=self.device)
-        if prompt_len > 0:
-            x[0, :prompt_len] = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)
 
-        # Track regions
-        is_prompt_mask = torch.zeros(total_len, dtype=torch.bool, device=self.device)
-        is_prompt_mask[:prompt_len] = True
-        gen_region = ~is_prompt_mask
-        is_finalized = is_prompt_mask.clone()
+        # Encode prompt
+        if isinstance(prompt, str):
+            prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+            prompt_tensor = torch.tensor([prompt_ids], dtype=torch.long, device=self.device)
+        else:
+            prompt_tensor = prompt.to(self.device)
 
-        # Banned tokens
-        banned_ids = {mask_id}
-        if self.pad_token_id is not None:
-            banned_ids.add(self.pad_token_id)
+        bsz = prompt_tensor.shape[0]
+        prompt_len = prompt_tensor.shape[1]
 
-        # Build intervention tensors for steering
-        int_known_ids, int_known_vals = None, None
-        int_unknown_ids, int_unknown_vals = None, None
+        # Initialize: prompt + all-masked generation region
+        x = torch.full(
+            (bsz, prompt_len + gen_length), mask_id, dtype=torch.long, device=self.device
+        )
+        x[:, :prompt_len] = prompt_tensor
 
-        if self.is_interpretable and steer_known:
-            int_known_ids, int_known_vals = self._build_intervention_tensors(steer_known, total_len)
-        if self.is_interpretable and steer_unknown:
-            int_unknown_ids, int_unknown_vals = self._build_intervention_tensors(steer_unknown, total_len)
+        prompt_index = x != mask_id
 
-        # Generation loop
-        tokens_generated = 0
-        eos_id = self.eos_token_id
+        assert gen_length % block_length == 0, (
+            f"gen_length ({gen_length}) must be divisible by block_length ({block_length})"
+        )
+        num_blocks = gen_length // block_length
 
-        while tokens_generated < max_new_tokens:
-            still_masked = (x[0] == mask_id) & gen_region
-            masked_indices = still_masked.nonzero(as_tuple=False).squeeze(-1)
+        assert steps % num_blocks == 0, (
+            f"steps ({steps}) must be divisible by num_blocks ({num_blocks})"
+        )
+        steps_per_block = steps // num_blocks
 
-            if masked_indices.numel() == 0:
-                break
-            if masked_indices.dim() == 0:
-                masked_indices = masked_indices.unsqueeze(0)
+        for block_idx in range(num_blocks):
+            block_start = prompt_len + block_idx * block_length
+            block_end = prompt_len + (block_idx + 1) * block_length
 
-            # Forward pass
-            if self.is_interpretable:
-                logits, _ = self.model(
-                    x,
-                    use_teacher_forcing=False,
-                    intervene_known_ids=int_known_ids,
-                    intervene_known_vals=int_known_vals,
-                    intervene_unknown_ids=int_unknown_ids,
-                    intervene_unknown_vals=int_unknown_vals,
-                    minimal_output=True,
-                )
-            else:
-                logits = self.model(x)
+            block_mask_index = x[:, block_start:block_end] == mask_id
+            num_transfer = _get_num_transfer_tokens(block_mask_index, steps_per_block)
 
-            masked_logits = logits[0, masked_indices].clone()
+            for step in range(steps_per_block):
+                mask_index = x == mask_id
 
-            # Eliminate special tokens
-            for tid in banned_ids:
-                masked_logits[:, tid] = -1e9
-
-            # Repetition penalty
-            if repetition_penalty != 1.0:
-                finalized_tokens = x[0, is_finalized].tolist()
-                for tok in set(finalized_tokens):
-                    if tok not in banned_ids:
-                        masked_logits[:, tok] /= repetition_penalty
-
-            # Select top-k positions by confidence
-            probs_for_conf = torch.softmax(masked_logits, dim=-1)
-            confidences = probs_for_conf.max(dim=-1).values
-            k = min(tokens_per_step, masked_indices.numel())
-            _, selected_pos_indices = confidences.topk(k)
-
-            # Fill selected positions
-            for pos_idx in selected_pos_indices:
-                seq_idx = int(masked_indices[pos_idx].item())
-                pos_logits = masked_logits[pos_idx]
-
-                # Temperature (entropy-adaptive or fixed)
-                if use_entropy_sampling:
-                    pos_probs_raw = torch.softmax(pos_logits, dim=-1)
-                    sorted_probs, _ = torch.sort(pos_probs_raw, descending=True)
-                    cumsum = torch.cumsum(sorted_probs, dim=-1)
-                    effective_k = max((cumsum <= top_p).sum().item() + 1, 2)
-
-                    entropy = -torch.sum(pos_probs_raw * torch.log(pos_probs_raw + 1e-10))
-                    normalized_entropy = min(1.0, entropy.item() / math.log(effective_k))
-                    adaptive_temp = 0.3 + 0.4 * normalized_entropy
-                    pos_probs = torch.softmax(pos_logits / adaptive_temp, dim=-1)
+                # Forward pass with optional CFG
+                if cfg_scale > 0.0:
+                    un_x = x.clone()
+                    un_x[prompt_index] = mask_id
+                    x_ = torch.cat([x, un_x], dim=0)
+                    logits = self._forward(x_)
+                    cond_logits, uncond_logits = torch.chunk(logits, 2, dim=0)
+                    logits = uncond_logits + (cfg_scale + 1) * (cond_logits - uncond_logits)
                 else:
-                    pos_probs = torch.softmax(pos_logits / max(temperature, 1e-8), dim=-1)
+                    logits = self._forward(x)
 
-                tok = self._sample_top_p(pos_probs, top_p)
-                x[0, seq_idx] = tok
-                is_finalized[seq_idx] = True
-                tokens_generated += 1
+                # Sample candidates
+                logits_with_noise = _add_gumbel_noise(logits, temperature=temperature)
+                x0 = torch.argmax(logits_with_noise, dim=-1)
 
-                if eos_id is not None and tok == eos_id:
+                # Confidence = softmax probability of chosen token
+                p = F.softmax(logits.float(), dim=-1)
+                x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
+
+                # Only consider positions within current block
+                x0_p[:, :block_start] = -np.inf
+                x0_p[:, block_end:] = -np.inf
+
+                x0 = torch.where(mask_index, x0, x)
+                confidence = torch.where(mask_index, x0_p, -np.inf)
+
+                # Unmask top-k most confident positions
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool)
+                for j in range(bsz):
+                    k = num_transfer[j, step].item()
+                    if k > 0:
+                        _, select_index = torch.topk(confidence[j], k=k)
+                        transfer_index[j, select_index] = True
+
+                x[transfer_index] = x0[transfer_index]
+
+            # After completing a block, check for stop tokens
+            if stop_tokens:
+                generated = x[:, prompt_len:block_end]
+                if any((generated == t).any() for t in stop_tokens):
                     break
 
-            if eos_id is not None and (x[0, gen_region] == eos_id).any():
-                break
+        return x
 
-        # Extract generated tokens
-        final_tokens = []
-        for i in range(prompt_len, total_len):
-            if is_finalized[i]:
-                final_tokens.append(x[0, i].item())
-            else:
-                break
+    def decode(self, output: torch.Tensor, prompt_len: int | None = None, skip_special: bool = True) -> str:
+        """Decode generated tensor to text, stripping mask tokens."""
+        ids = output[0, prompt_len:].tolist() if prompt_len is not None else output[0].tolist()
 
-        text = self.tokenizer.decode(final_tokens)
-        out_tokens = torch.tensor(prompt_ids + final_tokens, dtype=torch.long)
+        ids = [t for t in ids if t != self.mask_token_id]
+        return self.tokenizer.decode(ids, skip_special_tokens=skip_special)
 
-        return GenerationOutput(
-            text=text,
-            tokens=out_tokens,
-            prompt_tokens=prompt_len,
-            generated_tokens=len(final_tokens),
-        )
+    # ------------------------------------------------------------------
+    # Embeddings
+    # ------------------------------------------------------------------
 
     @torch.inference_mode()
     def get_embeddings(
@@ -397,30 +426,17 @@ class SteerlingGenerator:
             raise ValueError(f"Unknown pooling: {pooling}. Options: {list(pool_map.keys())}")
         return pool_map[pooling](hidden)
 
-    def _build_intervention_tensors(
-        self, interventions: dict[int, float], seq_len: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        K = len(interventions)
-        ids = (
-            torch.tensor(list(interventions.keys()), device=self.device)
-            .view(1, 1, K)
-            .expand(1, seq_len, K)
-            .clone()
-        )
-        vals = (
-            torch.tensor(list(interventions.values()), dtype=torch.float32, device=self.device)
-            .view(1, 1, K)
-            .expand(1, seq_len, K)
-            .clone()
-        )
-        return ids, vals
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
-    def _sample_top_p(self, probs: torch.Tensor, top_p: float) -> int:
-        sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-        cumulative = torch.cumsum(sorted_probs, dim=-1)
-        cutoff_mask = cumulative <= top_p
-        cutoff_mask[0] = True
-        cutoff_idx = min(cutoff_mask.sum().item() + 1, len(sorted_probs))
-        truncated = sorted_probs[:cutoff_idx]
-        truncated = truncated / truncated.sum()
-        return int(sorted_indices[torch.multinomial(truncated, 1)].item())
+    def _forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Forward pass returning logits, handling both HF and native models."""
+        if self.is_interpretable:
+            output = self.model(input_ids, minimal_output=True)
+        else:
+            output = self.model(input_ids)
+
+        if isinstance(output, tuple):
+            return output[0]
+        return output

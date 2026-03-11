@@ -1,0 +1,2 @@
+mkdir: cannot create directory ‘logs’: Permission denied
+mkdir: cannot create directory ‘eval_results’: Permission denied

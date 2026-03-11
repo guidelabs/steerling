@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/fss/aya/home/steerling_public/scripts/evaluate.py", line 20, in <module>
+    from steerling.evaluation.lm_harness_wrapper import run_evaluation
+  File "/fss/aya/home/steerling_public/steerling/evaluation/__init__.py", line 3, in <module>
+    from steerling.evaluation.lm_harness_wrapper import SteerlingLM, run_evaluation
+  File "/fss/aya/home/steerling_public/steerling/evaluation/lm_harness_wrapper.py", line 18, in <module>
+    from lm_eval import evaluator
+ModuleNotFoundError: No module named 'lm_eval'

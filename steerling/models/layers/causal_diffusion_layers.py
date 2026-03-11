@@ -10,6 +10,7 @@ Contains:
 from __future__ import annotations
 
 import logging
+import os
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +22,9 @@ from .primitives import MLP, RMSNorm, RotaryEmbedding
 
 logger = logging.getLogger(__name__)
 
-# FlexAttention imports (with fallback)
+# FlexAttention imports (with fallback to SDPA)
+# flex_attention requires Triton compilation which may fail on some GPUs
+# (e.g. insufficient shared memory). Set STEERLING_USE_FLEX_ATTN=1 to enable.
 try:
     from torch.nn.attention.flex_attention import (
         BlockMask,
@@ -35,6 +38,9 @@ except ImportError:
     BlockMask = None
     flex_attention = None
     _dense_to_ordered = None
+
+if os.environ.get("STEERLING_USE_FLEX_ATTN", "0") != "1":
+    _FLEX_ATTN_AVAILABLE = False
 
 if TYPE_CHECKING:
     from torch.nn.attention.flex_attention import BlockMask as BlockMaskType
@@ -195,7 +201,7 @@ class BlockCausalAttention(nn.Module):
 
         self.c_attn = nn.Linear(config.n_embd, attn_out, bias=use_bias)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=use_bias)
-        self.c_proj.SCALEX_SCALE_INIT = 1
+        self.c_proj.SCALE_INIT = 1
 
         # QK Norm
         if getattr(config, "use_qk_norm", False):

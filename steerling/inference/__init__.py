@@ -1,5 +1,5 @@
 """Inference utilities."""
 
-from steerling.inference.causal_diffusion import GenerationOutput, SteerlingGenerator
+from steerling.inference.causal_diffusion import SteerlingGenerator
 
-__all__ = ["SteerlingGenerator", "GenerationOutput"]
+__all__ = ["SteerlingGenerator"]

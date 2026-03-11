@@ -2,10 +2,13 @@
 
 from steerling.configs.causal_diffusion import CausalDiffusionConfig
 from steerling.configs.concept import ConceptConfig
+from steerling.configs.evaluation import TaskSettings, get_task_settings
 from steerling.configs.generation import GenerationConfig
 
 __all__ = [
-    "CausalDiffusionConfig",  # config for causal diffusion model
-    "ConceptConfig",  # config for concept decomposition
-    "GenerationConfig",  # config for generation
+    "CausalDiffusionConfig",
+    "ConceptConfig",
+    "GenerationConfig",
+    "TaskSettings",
+    "get_task_settings",
 ]

@@ -180,7 +180,7 @@ class MLP(nn.Module):
             }
             self.activation = act_map[config.activation]
 
-        self.c_proj.SCALEX_SCALE_INIT = 1  # type: ignore
+        self.c_proj.SCALE_INIT = 1  # type: ignore
         self.config = config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
