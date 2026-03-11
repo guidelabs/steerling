@@ -27,6 +27,9 @@ share/python-wheels/
 MANIFEST
 CLAUDE.md
 notebooks/generation_from_weights.ipynb
+notebooks/simple_walk_through.ipynb
+scripts/benchmark_speed.py
+scripts/build_hf_files_old.py
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.

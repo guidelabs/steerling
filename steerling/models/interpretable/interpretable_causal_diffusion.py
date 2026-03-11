@@ -63,14 +63,11 @@ class InterpretableCausalDiffusionLM(nn.Module):
             use_attention=concept_config.use_attention_known,
             topk=concept_config.topk_known,
             topk_features=concept_config.topk_known_features,
-            cfg_dropout_p=0.0,  # No dropout at inference
             block_size=concept_config.block_size,
             pad_multiple=concept_config.pad_multiple,
-            enforce_gt_for_known=False,
             store_unknown_weights=False,
             apply_topk_to_unknown=False,
             topk_on_logits=concept_config.topk_on_logits,
-            teacher_force_alpha=None,
         )
 
         # Unknown concept head (optional)
@@ -85,10 +82,8 @@ class InterpretableCausalDiffusionLM(nn.Module):
                 is_unknown=True,
                 use_attention=concept_config.use_attention_unknown,
                 topk=concept_config.unknown_topk,
-                cfg_dropout_p=0.0,
                 block_size=concept_config.block_size,
                 pad_multiple=concept_config.pad_multiple,
-                enforce_gt_for_known=False,
                 store_unknown_weights=False,
                 apply_topk_to_unknown=concept_config.apply_topk_to_unknown,
                 topk_on_logits=concept_config.topk_on_logits,
@@ -102,13 +97,12 @@ class InterpretableCausalDiffusionLM(nn.Module):
         self,
         input_ids: Tensor,
         *,
-        use_teacher_forcing: bool = False,
+        input_embeds: Tensor | None = None,
         intervene_known_ids: Tensor | None = None,
         intervene_known_vals: Tensor | None = None,
         intervene_unknown_ids: Tensor | None = None,
         intervene_unknown_vals: Tensor | None = None,
         minimal_output: bool = False,
-        # Steering injection
         position_injection: Tensor | None = None,
         steering_inject_layer: int | None = None,
         steering_inject_alpha: float = 1.0,
@@ -118,8 +112,8 @@ class InterpretableCausalDiffusionLM(nn.Module):
         Forward pass with concept decomposition.
 
         Args:
-            input_ids: Token IDs (B, T)
-            use_teacher_forcing: Ignored at inference (always False)
+            input_ids: Token IDs (B, T). May contain mask tokens.
+            input_embeds: Pre-computed embeddings (B, T, D). Overrides input_ids.
             intervene_known_ids: Known concept IDs to intervene (B, T, K_int)
             intervene_known_vals: Intervention values for known (B, T, K_int)
             intervene_unknown_ids: Unknown concept IDs to intervene (B, T, K_int)
@@ -140,19 +134,17 @@ class InterpretableCausalDiffusionLM(nn.Module):
         if position_injection is not None and steering_inject_layer is not None:
             hidden = self._forward_with_injection(
                 input_ids,
+                input_embeds,
                 position_injection,
                 steering_inject_layer,
                 steering_inject_alpha,
             )
         else:
-            hidden = self.transformer(input_ids, return_hidden=True)
+            hidden = self.transformer(input_ids, input_embeds=input_embeds, return_hidden=True)
 
         # Known concept head
         known_out: ConceptHeadOutput = self.known_head(
             hidden,
-            concept_ids=None,
-            concept_mask=None,
-            use_teacher_forcing=False,
             intervene_ids=intervene_known_ids,
             intervene_vals=intervene_known_vals,
             return_logits=need_dense_logits,
@@ -272,13 +264,14 @@ class InterpretableCausalDiffusionLM(nn.Module):
     def _forward_with_injection(
         self,
         input_ids: Tensor,
+        input_embeds: Tensor | None,
         position_injection: Tensor,
         inject_layer: int,
         inject_alpha: float,
     ) -> Tensor:
         """Forward through transformer with steering injection at specified layers."""
 
-        x = self.transformer.tok_emb(input_ids)
+        x = input_embeds if input_embeds is not None else self.transformer.tok_emb(input_ids)
 
         for i, block in enumerate(self.transformer.blocks):
             x = block(x)
@@ -328,7 +321,6 @@ class InterpretableCausalDiffusionLM(nn.Module):
 
         return self(
             input_ids,
-            use_teacher_forcing=False,
             intervene_known_ids=int_known_ids,
             intervene_known_vals=int_known_vals,
             intervene_unknown_ids=int_unknown_ids,

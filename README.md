@@ -15,14 +15,16 @@ pip install steerling
 ```
 
 ```python
-from steerling import SteerlingGenerator, GenerationConfig
+import torch
+from steerling import SteerlingGenerator
 
-generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b")
+generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b", device="cuda")
 
-text = generator.generate(
-    "The key to understanding neural networks is",
-    GenerationConfig(max_new_tokens=100, seed=42),
-)
+prompt = "The key to understanding neural networks is"
+output = generator.generate(prompt, gen_length=128, steps=128, temperature=0.4)
+
+prompt_len = len(generator.tokenizer.encode(prompt))
+text = generator.decode(output, prompt_len=prompt_len)
 print(text)
 ```
 
@@ -78,7 +80,7 @@ pip install -e ".[eval]"
 We provide evaluation scripts based on [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness).
 
 ```bash
-# Run all benchmarks (HellaSwag, ARC-Challenge, WinoGrande, PIQA, OpenBookQA, MMLU, GSM8K)
+# Run all benchmarks (HellaSwag, ARC-Challenge, WinoGrande, PIQA, MMLU, GSM8K)
 bash scripts/eval_steerling_lm_eval.sh
 
 # Specify a model path
@@ -90,6 +92,13 @@ TASKS="hellaswag arc_challenge" bash scripts/eval_steerling_lm_eval.sh
 # Or use the Python CLI directly
 python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_challenge
 ```
+
+## Notebooks
+
+| Notebook | Description |
+|----------|-------------|
+| [generation.ipynb](notebooks/generation.ipynb) | Text generation — block-by-block unmasking, special tokens, early stopping with `<\|endofchunk\|>` |
+| [logit_contribution.ipynb](notebooks/logit_contribution.ipynb) | Decompose each predicted token's logit into known concept, unknown concept, and residual contributions |
 
 ## FAQ
 
@@ -127,7 +136,15 @@ python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_
   Steerling uses OpenAI's `cl100k_base` tokenizer (via tiktoken) with 4 additional special tokens: `<|pad|>`, `<|bos|>`, `<|endofchunk|>`, and `<|mask|>`, for a total vocabulary of 100,281 tokens.
 
 - **Can I use this with the Hugging Face transformers library?**\
-  Not directly, Steerling uses a custom architecture (block-causal attention, concept heads) that isn't in the transformers library. Use the `steerling` package instead, which provides `SteerlingGenerator.from_pretrained()` with a similar interface.
+  Yes. Steerling supports `AutoModel.from_pretrained()` with `trust_remote_code=True`. Load the model and wrap it with `SteerlingGenerator` for generation:
+  ```python
+  from transformers import AutoModel, AutoTokenizer
+  from steerling import SteerlingGenerator
+
+  model = AutoModel.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True, torch_dtype=torch.bfloat16)
+  tokenizer = AutoTokenizer.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True)
+  generator = SteerlingGenerator.from_model(model, tokenizer, device="cuda")
+  ```
 
 - **How do I get training data attributions?**\
   This release is a light-weight version of the pipeline, so it doesn't directly support training data attribution. We have provided notebooks to enable concept and feature attributions. If you're interested in supporting training data attribution, please reach out to Guide Labs.

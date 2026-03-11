@@ -82,10 +82,8 @@ class ConceptHead(nn.Module):
         is_unknown: If True, skip GT pooling and teacher forcing
         use_attention: If True, use attention; else use linear predictor
         topk: Top-k sparsity for concept weights. None = no sparsity.
-        cfg_dropout_p: Classifier-free guidance dropout (known only)
         block_size: Block size for memory-efficient operations
         pad_multiple: Pad n_concepts to a multiple of this for efficiency
-        enforce_gt_for_known: If True, assert that GT is provided when is_unknown=False
         store_unknown_weights: If True and use_attention & is_unknown, store logits/weights
         apply_topk_to_unknown: If True, also apply top-k to unknown concepts
         topk_on_logits: If True, apply top-k on logits (then sigmoid). If False, on weights.
@@ -158,15 +156,12 @@ class ConceptHead(nn.Module):
         use_attention: bool = False,
         topk: int | None = 16,
         topk_features: int | None = None,
-        cfg_dropout_p: float = 0.1,
         block_size: int = 8192,
         *,
         pad_multiple: int = 16,
-        enforce_gt_for_known: bool = True,
         store_unknown_weights: bool = False,
         apply_topk_to_unknown: bool = False,
         topk_on_logits: bool = False,
-        teacher_force_alpha: float | None = None,
         # Factorization options
         factorize: bool = False,
         factorize_rank: int = 256,
@@ -180,16 +175,13 @@ class ConceptHead(nn.Module):
         self.use_attention = use_attention
         self.topk = topk
         self.topk_features = topk_features if topk_features is not None else topk
-        self.cfg_dropout_p = cfg_dropout_p
         self.block_size = block_size
 
         # Flags
         self.pad_multiple = pad_multiple
-        self.enforce_gt_for_known = enforce_gt_for_known
         self.store_unknown_weights = store_unknown_weights
         self.apply_topk_to_unknown = apply_topk_to_unknown
         self.topk_on_logits = topk_on_logits
-        self.teacher_force_alpha = teacher_force_alpha
 
         # Factorization options
         self.factorize = factorize
@@ -197,9 +189,6 @@ class ConceptHead(nn.Module):
 
         # let's track if this is a "large" head where dense ops are forbidden
         self._is_large = n_concepts > LARGE_CONCEPT_THRESHOLD
-
-        if teacher_force_alpha is not None:
-            assert 0.0 <= teacher_force_alpha <= 1.0, "teacher_force_alpha must be in [0, 1] or None"
 
         # Pad n_concepts to multiple of pad_multiple for efficiency
         self.n_concepts_padded = ((n_concepts + pad_multiple - 1) // pad_multiple) * pad_multiple
@@ -1207,44 +1196,30 @@ class ConceptHead(nn.Module):
     def forward(
         self,
         hidden: Tensor,
-        concept_ids: Tensor | None = None,
-        concept_mask: Tensor | None = None,
-        use_teacher_forcing: bool = True,
         intervene_ids: Tensor | None = None,
         intervene_vals: Tensor | None = None,
         return_logits: bool = False,
         store_hidden: bool = False,
     ) -> ConceptHeadOutput:
         """
-        Forward pass for concept decomposition.
+        Forward pass for concept decomposition (inference only, no teacher forcing).
 
         Args:
             hidden: Transformer hidden states (B, T, n_embd)
-            concept_ids: Ground truth concept IDs (B, T, K), -1 for invalid
-            concept_mask: Valid concept mask (B, T, K)
-            use_teacher_forcing: If True and not is_unknown, use GT features
             intervene_ids: Concept IDs to intervene on (B, T, K_int), -1 = skip
             intervene_vals: Intervention strength values (B, T, K_int)
             return_logits: If True, compute full (B, T, C) logits. Forbidden for large heads.
             store_hidden: If True, store hidden in output for later attribution.
 
         Returns:
-            ConceptHeadOutput with features, gt_features, logits, predicted, weights
+            ConceptHeadOutput with features, predicted, topk_indices, topk_logits
         """
         B, T, _ = hidden.shape
-        device = hidden.device
 
         has_interventions = intervene_ids is not None and intervene_vals is not None
 
         if return_logits:
             self._check_dense_allowed("return_logits=True")
-
-        # Enforce GT for known concepts if requested
-        if not self.is_unknown and self.enforce_gt_for_known and use_teacher_forcing:
-            assert concept_ids is not None and concept_mask is not None, (
-                "Known concepts require concept_ids and concept_mask when "
-                "enforce_gt_for_known=True and use_teacher_forcing=True"
-            )
 
         # Get valid concept count
         n_valid = self.n_concepts
@@ -1398,37 +1373,9 @@ class ConceptHead(nn.Module):
             assert intervene_ids is not None and intervene_vals is not None
             predicted = self._apply_sparse_interventions(predicted, hidden, intervene_ids, intervene_vals)
 
-        # ground truth pooling and teacher forcing (known concepts only)
-        gt_features: Tensor | None = None
-
-        if not self.is_unknown and concept_ids is not None and concept_mask is not None:
-            # Use the concept_embedding for pooling
-            if self.concept_embedding is not None:
-                gt_features = self.concept_pooling(concept_ids, concept_mask, self.concept_embedding)
-            else:
-                # Factorized: need to create a temporary embedding for pooling
-                full_E = self._get_embedding_weight()
-                temp_emb = nn.Embedding.from_pretrained(full_E, freeze=True)
-                gt_features = self.concept_pooling(concept_ids, concept_mask, temp_emb)
-
-            if self.training and self.cfg_dropout_p > 0.0:
-                keep = (torch.rand(B, 1, 1, device=device) > self.cfg_dropout_p).float()
-                gt_features = gt_features * keep  # type: ignore
-
-            if use_teacher_forcing:
-                if self.teacher_force_alpha is None:
-                    features = gt_features
-                else:
-                    alpha = self.teacher_force_alpha
-                    features = alpha * gt_features + (1.0 - alpha) * predicted  # type: ignore
-            else:
-                features = predicted
-        else:
-            features = predicted
-
         return ConceptHeadOutput(
-            features=features,  # type: ignore
-            gt_features=gt_features,
+            features=predicted,
+            gt_features=None,
             logits=concept_logits,
             predicted=predicted,
             weights=concept_weight,

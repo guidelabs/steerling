@@ -4,3 +4,16 @@ Job ID: 71364
 Node:   gpu-949
 GPU:    0
 Time:   Wed Mar 11 17:44:34 UTC 2026
+
+============================================================
+RESULTS SUMMARY
+============================================================
+
+arc_challenge:
+  alias: arc_challenge
+  acc,none: 0.4778
+  acc_stderr,none: 0.0146
+  acc_norm,none: 0.5341
+  acc_norm_stderr,none: 0.0146
+============================================================
+Finished arc_challenge at Wed Mar 11 19:18:13 UTC 2026

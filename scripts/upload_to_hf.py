@@ -12,7 +12,7 @@ from pathlib import Path
 
 from huggingface_hub import HfApi
 
-HF_DIR = Path(__file__).resolve().parent
+HF_DIR = Path(__file__).resolve().parent.parent / "hf"
 
 CODE_FILES = [
     "config.json",

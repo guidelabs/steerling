@@ -385,7 +385,7 @@ class SteerlingGenerator:
         x = torch.tensor([token_ids], dtype=torch.long, device=self.device)
 
         if self.is_interpretable:
-            _, outputs = self.model(x, use_teacher_forcing=False, minimal_output=False)
+            _, outputs = self.model(x, minimal_output=False)
 
             type_map = {
                 "hidden": outputs.hidden,

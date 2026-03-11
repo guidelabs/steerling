@@ -131,7 +131,7 @@ class SteerlingLM(LM):
         """Forward pass returning logits [B, T, V]."""
         with self._get_amp_context():
             if self.is_interpretable:
-                output = self.model(input_ids, use_teacher_forcing=False, minimal_output=True)
+                output = self.model(input_ids, minimal_output=True)
             else:
                 output = self.model(input_ids)
 
