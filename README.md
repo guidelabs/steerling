@@ -11,22 +11,25 @@ Steerling-8B combines masked diffusion language modeling with concept decomposit
 ## Quick Start
 
 ```bash
-pip install steerling
+uv pip install steerling
 ```
 
 ```python
 import torch
+from transformers import AutoModel, AutoTokenizer
 from steerling import SteerlingGenerator
 
-generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b", device="cuda")
+model = AutoModel.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True, torch_dtype=torch.bfloat16)
+tokenizer = AutoTokenizer.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True)
+generator = SteerlingGenerator.from_model(model, tokenizer, device="cuda")
 
 prompt = "The key to understanding neural networks is"
 output = generator.generate(prompt, gen_length=128, steps=128, temperature=0.4)
-
-prompt_len = len(generator.tokenizer.encode(prompt))
-text = generator.decode(output, prompt_len=prompt_len)
+text = generator.decode(output, prompt_len=len(tokenizer.encode(prompt)))
 print(text)
 ```
+
+**Requirements:** Python >= 3.13, GPU with >= 18 GB VRAM (H100, A100, A6000, RTX 4090), CUDA 12.8
 
 ## Model Details
 
@@ -50,7 +53,7 @@ h → known_features + unk_hat + epsilon = composed → lm_head → logits
 ```
 
 <p align="center">
-  <img src="imgs/embedding_decomposition.apng" width="80%" alt="Embedding decomposition animation" />
+  <img src="assets/images/embedding_decomposition.apng" width="80%" alt="Embedding decomposition animation" />
 </p>
 
 - `known_features`: Weighted sum of top-k learned concept embeddings
@@ -61,19 +64,17 @@ h → known_features + unk_hat + epsilon = composed → lm_head → logits
 
 ```bash
 # From PyPI
-pip install steerling
+uv pip install steerling
 
-# From source (with uv)
+# From source
 git clone https://github.com/guidelabs/steerling.git
 cd steerling
-uv pip install -e ".[dev]"
-
-# From source (with pip)
-pip install -e ".[dev]"
-
-# Evaluation dependencies only
-pip install -e ".[eval]"
+uv pip install -e ".[dev]"        # full dev environment
+uv pip install -e ".[eval]"       # evaluation dependencies only
+uv pip install -e ".[notebook]"   # notebook dependencies only
 ```
+
+**Note:** PyTorch is installed with CUDA 12.8 support automatically via the PyTorch index configured in `pyproject.toml`. If you need a different CUDA version, install PyTorch manually before installing steerling.
 
 ## Evaluation
 
@@ -102,65 +103,43 @@ python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_
 
 ## FAQ
 
-- **Where can I read more about the details of this architecture?**\
-  You can read more about the architecture in these blog posts: [Scaling Interpretable Models with 8B Parameters](https://www.guidelabs.ai/post/scaling-interpretable-models-8b/) and [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/). We will be releasing a more detailed technical report in a few months.
+- **Where can I read more about the architecture?**\
+  See our blog posts: [Scaling Interpretable Models with 8B Parameters](https://www.guidelabs.ai/post/scaling-interpretable-models-8b/) and [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/). A detailed technical report is coming soon.
 
-- **This is a base model, what about an instruction-tuned model?**\
+- **Is there an instruction-tuned model?**\
   Stay tuned.
 
-- **Is training code available?**\
-  This release is inference-only, so the training code is not included. If you're interested in training or fine-tuning, please reach out to info@guidelabs.ai.
-
-- **What dataset did you train on?**\
-  We trained on an augmented version of the Nemontron-cc-hq data for a total of about 1.35 Trillion tokens.
+- **What dataset was this trained on?**\
+  An augmented version of the Nemotron-CC-HQ dataset for approximately 1.35 trillion tokens.
 
 - **What is block-causal attention?**\
-  Standard causal attention only lets each token attend to previous tokens. Block-causal attention groups tokens into blocks of 64 and allows bidirectional attention within each block, while maintaining causal ordering across blocks. This gives the model local bidirectional context while preserving the ability to generate sequentially. Refer to this post: [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/), for more details.
+  Standard causal attention only lets each token attend to previous tokens. Block-causal attention groups tokens into blocks of 64 and allows bidirectional attention within each block, while maintaining causal ordering across blocks. See [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/) for more details.
 
 - **What are "known" and "unknown" concepts?**\
   The model decomposes its internal representations into two parts:
-  - *Known concepts* (33,732): learned and supervised features that correspond to identifiable patterns that a human will understand.
-  - *Unknown concepts* (101,196): capture the signal that known concepts don't explain in the hidden representations.
-  - Together they reconstruct the full hidden state with an error: `hidden ≈ known_features + unknown_features + epsilon`.
+  - *Known concepts* (33,732): learned, supervised features corresponding to identifiable patterns a human can understand.
+  - *Unknown concepts* (101,196): capture the signal that known concepts don't explain.
+  - Together they reconstruct the full hidden state: `hidden ≈ known_features + unknown_features + epsilon`.
 
 - **How do I find concept IDs for steering?**\
-  Over the coming weeks, we will provide a full-scale walkthrough of how to extract and steer Steerling-8B.
+  A full walkthrough of concept extraction and steering is coming in the next few weeks.
 
 - **What GPU do I need?**\
-  Steerling-8B in bfloat16 requires approximately 18GB VRAM. It fits on a single H100, A100 (40GB or 80GB), A6000 (48GB), or RTX 4090 (24GB).
+  Steerling-8B in bfloat16 requires approximately 18 GB VRAM. It fits on a single H100, A100 (40GB or 80GB), A6000 (48GB), or RTX 4090 (24GB).
 
 - **Can I fine-tune this model?**\
-  Yes. However, we have not included finetuning code with this package. It is currently an inference-only release; if there is increasing request, we will support fine-tuning in a future release.
+  Yes, but fine-tuning code is not included in this release. If there is sufficient interest, we will support it in a future release.
 
 - **What tokenizer does Steerling-8B use?**\
-  Steerling uses OpenAI's `cl100k_base` tokenizer (via tiktoken) with 4 additional special tokens: `<|pad|>`, `<|bos|>`, `<|endofchunk|>`, and `<|mask|>`, for a total vocabulary of 100,281 tokens.
-
-- **Can I use this with the Hugging Face transformers library?**\
-  Yes. Steerling supports `AutoModel.from_pretrained()` with `trust_remote_code=True`. Load the model and wrap it with `SteerlingGenerator` for generation:
-  ```python
-  from transformers import AutoModel, AutoTokenizer
-  from steerling import SteerlingGenerator
-
-  model = AutoModel.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True, torch_dtype=torch.bfloat16)
-  tokenizer = AutoTokenizer.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True)
-  generator = SteerlingGenerator.from_model(model, tokenizer, device="cuda")
-  ```
+  OpenAI's `cl100k_base` tokenizer (via tiktoken) with 4 additional special tokens: `<|pad|>`, `<|bos|>`, `<|endofchunk|>`, and `<|mask|>`, for a total vocabulary of 100,281 tokens.
 
 - **How do I get training data attributions?**\
-  This release is a light-weight version of the pipeline, so it doesn't directly support training data attribution. We have provided notebooks to enable concept and feature attributions. If you're interested in supporting training data attribution, please reach out to Guide Labs.
+  This release supports concept and feature attributions via the provided notebooks. Training data attribution is not currently supported but will be added in a future release.
 
 ## License
 
 The Steerling source code is released under the [Apache License 2.0](LICENSE).
 
-The model weights are provided for research and evaluation purposes.
-The weights were trained on datasets with varying license terms, including
-[Nemotron-CC-HQ](https://huggingface.co/datasets/nvidia/Nemotron-CC) and
-[Dolmino Mix](https://huggingface.co/datasets/allenai/dolmino-mix-1124).
-Some training data includes synthetic content generated by third-party models
-with their own license terms. We are currently reviewing the implications of
-these upstream licenses for downstream use of the model weights.
-Please check back for updates on the weight licensing terms.
+The model weights are provided for research and evaluation purposes. The weights were trained on datasets with varying license terms, including [Nemotron-CC-HQ](https://huggingface.co/datasets/nvidia/Nemotron-CC) and [Dolmino Mix](https://huggingface.co/datasets/allenai/dolmino-mix-1124). Some training data includes synthetic content generated by third-party models with their own license terms. We are currently reviewing the implications of these upstream licenses for downstream use of the model weights. Please check back for updates.
 
-For questions about commercial use of the model weights,
-contact us at info@guidelabs.ai
+For questions about commercial use of the model weights, contact us at info@guidelabs.ai.
