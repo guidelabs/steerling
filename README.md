@@ -6,7 +6,7 @@ Steerling-8B combines masked diffusion language modeling with concept decomposit
 - **Generation**: Non-autoregressive text generation via confidence-based unmasking
 - **Attribution**: Decompose predictions into known concept contributions
 - **Steering**: Intervene on concept activations to control generation
-- **Embeddings**: Extract hidden, composed, known, or unknown representations
+- **Embeddings**: Extract hidden, composed, known, or discovered representations
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ print(text)
 | Context Length | 4096 |
 | Vocabulary | 100,281 (cl100k_base + specials) |
 | Known Concepts | 33,732 |
-| Unknown Concepts | 101,196 |
+| Discovered Concepts | 101,196 |
 | GQA | 32 heads, 4 KV heads |
 | Precision | bfloat16 |
 
@@ -57,7 +57,7 @@ h → known_features + unk_hat + epsilon = composed → lm_head → logits
 </p>
 
 - `known_features`: Weighted sum of top-k learned concept embeddings
-- `unk_hat`: Residual features captured by a factorized unknown head
+- `unk_hat`: Residual features captured by a factorized discovered concept head
 - `epsilon`: Small correction term for reconstruction fidelity
 
 ## Installation
@@ -99,7 +99,7 @@ python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_
 | Notebook | Description |
 |----------|-------------|
 | [generation.ipynb](notebooks/generation.ipynb) | Text generation — block-by-block unmasking, special tokens, early stopping with `<\|endofchunk\|>` |
-| [logit_contribution.ipynb](notebooks/logit_contribution.ipynb) | Decompose each predicted token's logit into known concept, unknown concept, and residual contributions |
+| [logit_contribution.ipynb](notebooks/logit_contribution.ipynb) | Decompose each predicted token's logit into known concept, discovered concept, and residual contributions |
 
 ## FAQ
 
@@ -115,11 +115,11 @@ python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_
 - **What is block-causal attention?**\
   Standard causal attention only lets each token attend to previous tokens. Block-causal attention groups tokens into blocks of 64 and allows bidirectional attention within each block, while maintaining causal ordering across blocks. See [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/) for more details.
 
-- **What are "known" and "unknown" concepts?**\
+- **What are "known" and "discovered" concepts?**\
   The model decomposes its internal representations into two parts:
   - *Known concepts* (33,732): learned, supervised features corresponding to identifiable patterns a human can understand.
-  - *Unknown concepts* (101,196): capture the signal that known concepts don't explain.
-  - Together they reconstruct the full hidden state: `hidden ≈ known_features + unknown_features + epsilon`.
+  - *Discovered concepts* (101,196): capture the signal that known concepts don't explain.
+  - Together they reconstruct the full hidden state: `hidden ≈ known_features + discovered_features + epsilon`.
 
 - **How do I find concept IDs for steering?**\
   A full walkthrough of concept extraction and steering is coming in the next few weeks.
