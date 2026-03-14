@@ -1231,17 +1231,16 @@ class ConceptHead(nn.Module):
         topk_indices: Tensor | None = None
         topk_logits: Tensor | None = None
 
-        # Path selection based on: factorize, use_attention, topk, etc.
-        # For small heads with interventions or explicit return_logits: use dense path
-        use_dense_intervention = has_interventions and not self._is_large
-        needs_dense = return_logits or use_dense_intervention
-
         # Determine if we should apply top-k
         apply_topk = self.topk is not None and (not self.is_unknown or self.apply_topk_to_unknown)
         k_features = self.topk_features if self.topk_features is not None else self.topk
 
-        if needs_dense:
-            # DENSE PATH (for small heads with interventions or return_logits)
+        # Dense interventions need the full weight matrix to modify before computing features
+        use_dense_intervention = has_interventions and not self._is_large
+
+        # --- Step 1: Compute features (always via top-k when configured) ---
+        if use_dense_intervention:
+            # DENSE INTERVENTION PATH: must compute all weights to apply interventions
             E = self._get_embedding_weight()[:n_valid]
 
             if self.use_attention:
@@ -1257,11 +1256,10 @@ class ConceptHead(nn.Module):
 
             concept_weight = self._compute_weights(concept_logits, E)  # type: ignore
 
-            if use_dense_intervention:
-                assert intervene_ids is not None and intervene_vals is not None
-                concept_weight = self._apply_dense_interventions(
-                    concept_weight, intervene_ids, intervene_vals
-                )
+            assert intervene_ids is not None and intervene_vals is not None
+            concept_weight = self._apply_dense_interventions(
+                concept_weight, intervene_ids, intervene_vals
+            )
 
             predicted = self.blocked_mix(concept_weight, E, block_size=self.block_size)
 
@@ -1313,7 +1311,7 @@ class ConceptHead(nn.Module):
                 )
 
         else:
-            # dense all concepts path
+            # DENSE ALL CONCEPTS PATH (no top-k configured)
             E = self._get_embedding_weight()[:n_valid]
 
             if self.use_attention:
@@ -1334,12 +1332,30 @@ class ConceptHead(nn.Module):
             topk_indices = torch.gather(topk_indices, -1, rerank_idx)  # type: ignore
             topk_logits = torch.gather(topk_logits, -1, rerank_idx)  # type: ignore
 
+        # --- Step 2: Optionally compute dense logits/weights for analysis ---
+        if return_logits and not use_dense_intervention:
+            # Dense logits were not already computed; compute them now (analysis only)
+            E = self._get_embedding_weight()[:n_valid]
+
+            if self.use_attention:
+                query = self.concept_query_projection(hidden)
+                concept_logits = self.blocked_logits(query, E, block_size=self.block_size)
+            else:
+                if self.factorize:
+                    W = self._get_predictor_weight()[:n_valid]  # type: ignore
+                    raw_logits = hidden @ W.T
+                else:
+                    raw_logits = self.concept_predictor(hidden)[..., :n_valid]  # type: ignore
+                concept_logits = raw_logits.float().clamp(-15, 15)
+
+            concept_weight = self._compute_weights(concept_logits, E)  # type: ignore
+
         # Debug: log which path was taken (once per head)
         if not hasattr(self, "_logged_forward_path"):
             self._logged_forward_path = True
             path = (
-                "dense"
-                if needs_dense
+                "dense_intervention"
+                if use_dense_intervention
                 else "factorized_topk"
                 if (self.factorize and apply_topk)
                 else "factorized_all"
@@ -1369,7 +1385,7 @@ class ConceptHead(nn.Module):
                 )
 
         # Apply sparse interventions if needed
-        if has_interventions and not needs_dense:
+        if has_interventions and not use_dense_intervention:
             assert intervene_ids is not None and intervene_vals is not None
             predicted = self._apply_sparse_interventions(predicted, hidden, intervene_ids, intervene_vals)
 
