@@ -31,7 +31,7 @@ CLAUDE.md
 notebooks/generation_from_weights.ipynb
 notebooks/simple_walk_through.ipynb
 scripts/benchmark_speed.py
-scripts/build_hf_files_old.py
+scripts/build_hf_files_*.py
 eval_results/
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -196,7 +196,8 @@ cython_debug/
 # .vscode/
 
 # Generated HF files (built by scripts/build_hf_files.py)
-hf/
+hf*/
+
 
 # Ruff stuff:
 .ruff_cache/

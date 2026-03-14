@@ -82,7 +82,7 @@ class CausalDiffusionLM(nn.Module):
 
         if return_hidden:
             return x
-
+    
         return self.lm_head(x)
 
     def get_num_params(self, non_embedding: bool = True) -> int:

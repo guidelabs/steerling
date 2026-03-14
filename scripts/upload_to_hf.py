@@ -2,7 +2,7 @@
 """Upload Steerling model to HuggingFace Hub.
 
 Usage:
-    python hf/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name
+    python scripts/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name
 """
 
 from __future__ import annotations

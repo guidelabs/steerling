@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Generate HF-compatible files for Steerling.
 
-Dynamically reads model/tokenizer/concept configs from the steerling package
+Reads model and concept configs from a scalex training config file
 and inlines source files — no hardcoded values.
 
 Usage:
-    python scripts/build_hf_files.py
-    python scripts/build_hf_files.py --output-dir custom/hf/path
+    python scripts/build_hf_files_v3.py --config /path/to/training_config.py
+    python scripts/build_hf_files_v3.py --config /path/to/training_config.py --output-dir custom/hf/path
 """
 
 from __future__ import annotations
@@ -30,16 +30,46 @@ def _read_source(rel_path: str) -> str:
     return (REPO_ROOT / rel_path).read_text()
 
 
-def _pydantic_defaults(model_cls) -> dict:
-    return {
-        name: field.default
-        for name, field in model_cls.model_fields.items()
-        if not field.is_required()
-    }
+def _load_training_config(config_path: Path) -> tuple[dict, dict]:
+    source = config_path.read_text()
+
+    variables: dict[str, object] = {}
+    for m in re.finditer(r"^(\w+)\s*=\s*(.+?)$", source, re.MULTILINE):
+        name, expr = m.group(1), m.group(2).strip()
+        try:
+            variables[name] = ast.literal_eval(expr)
+        except (ValueError, SyntaxError):
+            pass
+
+    def _resolve(val_str: str) -> object:
+        val_str = val_str.strip().rstrip(",")
+        try:
+            return ast.literal_eval(val_str)
+        except (ValueError, SyntaxError):
+            if val_str in variables:
+                return variables[val_str]
+            return None
+
+    def _extract_constructor(var_name: str) -> dict:
+        pattern = rf"{var_name}\s*=\s*\w+\((.*?)\)"
+        m = re.search(pattern, source, re.DOTALL)
+        if m is None:
+            raise ValueError(f"Could not find '{var_name} = ...(...)' in {config_path}")
+        body = m.group(1)
+        result = {}
+        for kwm in re.finditer(r"(\w+)\s*=\s*([^,\n]+)", body):
+            key = kwm.group(1)
+            val = _resolve(kwm.group(2))
+            if val is not None:
+                result[key] = val
+        return result
+
+    arch = _extract_constructor("model_config")
+    concept = _extract_constructor("concept_config")
+    return arch, concept
 
 
 def _strip_docstrings(source: str) -> str:
-    """Remove all docstrings from Python source via AST round-trip."""
     tree = ast.parse(source)
 
     class Stripper(ast.NodeTransformer):
@@ -75,14 +105,16 @@ def compact_json(obj: dict) -> str:
 # JSON configs
 # ===========================================================================
 
-def build_config_json() -> dict:
+def build_config_json(arch: dict, concept: dict) -> dict:
     from steerling.configs.causal_diffusion import CausalDiffusionConfig
     from steerling.configs.concept import ConceptConfig
     from steerling.data.tokenizer import SteerlingTokenizer
 
-    arch = _pydantic_defaults(CausalDiffusionConfig)
-    concept = _pydantic_defaults(ConceptConfig)
     tok = SteerlingTokenizer()
+    arch_defaults = {name: f.default for name, f in CausalDiffusionConfig.model_fields.items() if not f.is_required()}
+    concept_defaults = {name: f.default for name, f in ConceptConfig.model_fields.items() if not f.is_required()}
+    a = {**arch_defaults, **arch}
+    c = {**concept_defaults, **concept}
 
     return {
         "model_type": "steerling",
@@ -93,51 +125,52 @@ def build_config_json() -> dict:
             "AutoTokenizer": ["tokenization_steerling.SteerlingTokenizer", None],
         },
         "architectures": ["SteerlingForCausalLM"],
+        "interpretable": a.get("interpretable", False),
         "vocab_size": tok.vocab_size,
-        "n_layers": arch["n_layers"],
-        "n_head": arch["n_head"],
-        "n_embd": arch["n_embd"],
-        "n_kv_heads": arch["n_kv_heads"],
-        "block_size": arch["block_size"],
-        "diff_block_size": arch["diff_block_size"],
-        "use_rms_norm": arch["use_rms_norm"],
-        "norm_eps": arch["norm_eps"],
-        "norm_order": arch["norm_order"],
-        "use_qk_norm": arch["use_qk_norm"],
-        "use_rope": arch["use_rope"],
-        "rope_base": arch["rope_base"],
-        "rope_full_precision": arch["rope_full_precision"],
-        "clip_qkv": arch["clip_qkv"],
-        "mlp_type": arch["mlp_type"],
-        "activation": arch["activation"],
-        "mlp_ratio": arch["mlp_ratio"],
-        "intermediate_size": arch["intermediate_size"],
-        "use_bias": arch["use_bias"],
-        "weight_sharing": arch["weight_sharing"],
+        "n_layers": a["n_layers"],
+        "n_head": a["n_head"],
+        "n_embd": a["n_embd"],
+        "n_kv_heads": a["n_kv_heads"],
+        "block_size": a["block_size"],
+        "diff_block_size": a["diff_block_size"],
+        "use_rms_norm": a["use_rms_norm"],
+        "norm_eps": a["norm_eps"],
+        "norm_order": a["norm_order"],
+        "use_qk_norm": a["use_qk_norm"],
+        "use_rope": a["use_rope"],
+        "rope_base": a["rope_base"],
+        "rope_full_precision": a["rope_full_precision"],
+        "clip_qkv": a["clip_qkv"],
+        "mlp_type": a["mlp_type"],
+        "activation": a["activation"],
+        "mlp_ratio": a["mlp_ratio"],
+        "intermediate_size": a["intermediate_size"],
+        "use_bias": a["use_bias"],
+        "weight_sharing": a["weight_sharing"],
         "pad_token_id": tok.pad_token_id,
         "bos_token_id": tok.bos_token_id,
         "eos_token_id": tok.eos_token_id,
         "mask_token_id": tok.mask_token_id,
         "endofchunk_token_id": tok.endofchunk_token_id,
-        "n_concepts": concept["n_concepts"],
-        "n_unknown_concepts": concept["n_unknown_concepts"],
-        "concept_dim": concept["concept_dim"],
-        "use_attention_known": concept["use_attention_known"],
-        "use_attention_unknown": concept["use_attention_unknown"],
-        "topk_known": concept["topk_known"],
-        "topk_known_features": concept["topk_known_features"],
-        "unknown_topk": concept["unknown_topk"],
-        "use_unknown": concept["use_unknown"],
-        "apply_topk_to_unknown": concept["apply_topk_to_unknown"],
-        "topk_on_logits": concept["topk_on_logits"],
-        "factorize_unknown": concept["factorize_unknown"],
-        "factorize_rank": concept["factorize_rank"],
-        "use_epsilon_correction": concept["use_epsilon_correction"],
-        "concept_block_size": concept["block_size"],
-        "pad_multiple": concept["pad_multiple"],
-        "store_unknown_weights": concept["store_unknown_weights"],
-        "inject_layer": concept["inject_layer"],
-        "inject_alpha": concept["inject_alpha"],
+        "n_concepts": c["n_concepts"],
+        "n_unknown_concepts": c["n_unknown_concepts"],
+        "concept_dim": c["concept_dim"],
+        "use_attention_known": c["use_attention_known"],
+        "use_attention_unknown": c["use_attention_unknown"],
+        "topk_known": c["topk_known"],
+        "topk_known_features": c["topk_known_features"],
+        "unknown_topk": c["unknown_topk"],
+        "use_unknown": c["use_unknown"],
+        "apply_topk_to_unknown": c["apply_topk_to_unknown"],
+        "topk_on_logits": c["topk_on_logits"],
+        "factorize_unknown": c["factorize_unknown"],
+        "factorize_rank": c["factorize_rank"],
+        "use_epsilon_correction": c["use_epsilon_correction"],
+        "concept_block_size": c["block_size"],
+        "pad_multiple": c["pad_multiple"],
+        "store_unknown_weights": c["store_unknown_weights"],
+        "inject_layer": c["inject_layer"],
+        "inject_alpha": c["inject_alpha"],
         "torch_dtype": "bfloat16",
         "transformers_version": "4.48.0",
     }
@@ -166,16 +199,19 @@ def build_tokenizer_config_json() -> dict:
 # Python files
 # ===========================================================================
 
-def build_configuration_py() -> str:
+def build_configuration_py(arch: dict, concept: dict) -> str:
     from steerling.configs.causal_diffusion import CausalDiffusionConfig
     from steerling.configs.concept import ConceptConfig
     from steerling.data.tokenizer import SteerlingTokenizer
 
-    arch = _pydantic_defaults(CausalDiffusionConfig)
-    concept = _pydantic_defaults(ConceptConfig)
     tok = SteerlingTokenizer()
+    arch_defaults = {name: f.default for name, f in CausalDiffusionConfig.model_fields.items() if not f.is_required()}
+    concept_defaults = {name: f.default for name, f in ConceptConfig.model_fields.items() if not f.is_required()}
+    arch = {**arch_defaults, **arch}
+    concept = {**concept_defaults, **concept}
 
     assigns = [
+        "interpretable",
         "n_layers", "n_head", "n_embd", "n_kv_heads", "block_size", "diff_block_size",
         "use_rms_norm", "norm_eps", "norm_order", "use_qk_norm",
         "use_rope", "rope_base", "rope_full_precision", "clip_qkv",
@@ -236,10 +272,8 @@ def build_tokenization_py() -> str:
     tok = SteerlingTokenizer()
     enc = SteerlingTokenizer.ENCODING_NAME
 
-    # Read core tokenizer, strip docstrings and steerling-internal imports
     core = _read_source("steerling/data/tokenizer.py")
     core = _strip_docstrings(core)
-    # Remove numpy/torch deps not needed in HF wrapper
     core = re.sub(r"^import numpy.*\n", "", core, flags=re.MULTILINE)
     core = re.sub(r"^import torch.*\n", "", core, flags=re.MULTILINE)
     core = re.sub(r"^from torch.*\n", "", core, flags=re.MULTILINE)
@@ -339,7 +373,6 @@ def build_modeling_py() -> str:
     all_body: list[str] = []
 
     for path in sources:
-        # Strip docstrings FIRST before any other processing
         src = _strip_docstrings(_read_source(path))
         lines = src.splitlines()
 
@@ -353,7 +386,6 @@ def build_modeling_py() -> str:
                 continue
             stripped = line.strip()
 
-            # Skip TYPE_CHECKING blocks with internal imports
             if stripped == "if TYPE_CHECKING:":
                 skip_type_checking = True
                 continue
@@ -370,7 +402,7 @@ def build_modeling_py() -> str:
                     seen.add(line)
                     imports.append(line)
             elif stripped == "" or stripped.startswith("#"):
-                pass  # skip blanks/comments between imports
+                pass
             else:
                 past = True
                 body.append(line)
@@ -384,51 +416,84 @@ def build_modeling_py() -> str:
     future = [line for line in all_imports if "from __future__" in line]
     rest   = [line for line in all_imports if "from __future__" not in line]
 
-    header = '# Auto-generated by scripts/build_hf_files.py — do not edit manually.\n\n'
+    header = "# Auto-generated by scripts/build_hf_files_v3.py — do not edit manually.\n\n"
+    body_str = "\n".join(all_body)
 
-    body = "\n".join(all_body)
-
-    # PreTrainedModel wrapper so HF's from_pretrained / register_for_auto_class work
-    hf_wrapper = '''
-from transformers import PreTrainedModel
-from .configuration_steerling import SteerlingConfig
-
-
-class _HFConfigAdapter:
-    """Adapts a flat SteerlingConfig into the arch/concept config duck-type that
-    InterpretableCausalDiffusionLM expects. Passes all attribute lookups through."""
-    def __init__(self, hf_config, block_size_key="block_size"):
-        self._cfg = hf_config
-        self._block_size_key = block_size_key
-    def __getattr__(self, name):
-        if name == "block_size" and self._block_size_key == "concept_block_size":
-            return getattr(self._cfg, "concept_block_size", None)
-        return getattr(self._cfg, name, None)
-
-
-class SteerlingForCausalLM(PreTrainedModel):
-    config_class = SteerlingConfig
-    supports_gradient_checkpointing = False
-
-    def __init__(self, config: SteerlingConfig):
-        super().__init__(config)
-        arch = _HFConfigAdapter(config, block_size_key="block_size")
-        concept = _HFConfigAdapter(config, block_size_key="concept_block_size")
-        self.model = InterpretableCausalDiffusionLM(arch, concept, config.vocab_size)
-        self.post_init()
-
-    def forward(self, input_ids=None, **kwargs):
-        return self.model(input_ids, **kwargs)
-
-    def _init_weights(self, module):
-        pass
-'''
+    hf_wrapper = (
+        "\n"
+        "from transformers import PreTrainedModel\n"
+        "from .configuration_steerling import SteerlingConfig\n"
+        "\n"
+        "\n"
+        "# CausalDiffusionLM is the backbone — alias to HF-friendly name\n"
+        "SteerlingBackbone = CausalDiffusionLM\n"
+        "\n"
+        "\n"
+        "class SteerlingForCausalLM(PreTrainedModel):\n"
+        "    config_class = SteerlingConfig\n"
+        "    supports_gradient_checkpointing = False\n"
+        '    _tied_weights_keys = ["transformer.lm_head.weight"]\n'
+        "\n"
+        "    def __init__(self, config: SteerlingConfig):\n"
+        "        super().__init__(config)\n"
+        "        # SteerlingConfig has all fields from both arch and concept configs\n"
+        "        self.concept_config = config\n"
+        "        self.transformer = SteerlingBackbone(config, config.vocab_size)\n"
+        "        self.known_head = ConceptHead(\n"
+        "            n_concepts=config.n_concepts,\n"
+        "            concept_dim=config.concept_dim,\n"
+        "            n_embd=config.n_embd,\n"
+        "            is_unknown=False,\n"
+        "            use_attention=config.use_attention_known,\n"
+        "            topk=config.topk_known,\n"
+        "            topk_features=config.topk_known_features,\n"
+        "            block_size=config.concept_block_size,\n"
+        "            pad_multiple=config.pad_multiple,\n"
+        "            store_unknown_weights=False,\n"
+        "            apply_topk_to_unknown=False,\n"
+        "            topk_on_logits=config.topk_on_logits,\n"
+        "            factorize=False,\n"
+        "        )\n"
+        "        if config.use_unknown:\n"
+        "            self.unknown_head = ConceptHead(\n"
+        "                n_concepts=config.n_unknown_concepts,\n"
+        "                concept_dim=config.concept_dim,\n"
+        "                n_embd=config.n_embd,\n"
+        "                is_unknown=True,\n"
+        "                use_attention=config.use_attention_unknown,\n"
+        "                topk=config.unknown_topk,\n"
+        "                block_size=config.concept_block_size,\n"
+        "                pad_multiple=config.pad_multiple,\n"
+        "                store_unknown_weights=config.store_unknown_weights,\n"
+        "                apply_topk_to_unknown=config.apply_topk_to_unknown,\n"
+        "                topk_on_logits=config.topk_on_logits,\n"
+        "                factorize=config.factorize_unknown,\n"
+        "                factorize_rank=config.factorize_rank,\n"
+        "            )\n"
+        "        else:\n"
+        "            self.unknown_head = None\n"
+        "        self.post_init()\n"
+        "\n"
+        "    def _init_weights(self, module):\n"
+        "        pass\n"
+        "\n"
+        "    def _tie_weights(self):\n"
+        "        if self.config.weight_sharing:\n"
+        "            self.transformer.lm_head.weight = self.transformer.tok_emb.weight\n"
+        "\n"
+        "    def forward(self, input_ids=None, **kwargs):\n"
+        "        if self.config.interpretable:\n"
+        "            return InterpretableCausalDiffusionLM.forward(self, input_ids, **kwargs)\n"
+        "        else:\n"
+        "            kwargs.pop('minimal_output', None)\n"
+        "            return CausalDiffusionLM.forward(self, input_ids, **kwargs)\n"
+    )
 
     return (
         "\n".join(future) + "\n"
         + header
         + "\n".join(rest) + "\n\n"
-        + body
+        + body_str
         + hf_wrapper
     )
 
@@ -437,20 +502,28 @@ class SteerlingForCausalLM(PreTrainedModel):
 # File registry & entry point
 # ===========================================================================
 
-FILES = {
-    "config.json":                lambda: compact_json(build_config_json()),
-    "tokenizer_config.json":      lambda: compact_json(build_tokenizer_config_json()),
-    "configuration_steerling.py": build_configuration_py,
-    "tokenization_steerling.py":  build_tokenization_py,
-    "modeling_steerling.py":      build_modeling_py,
-}
-
-
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Path to scalex training config file (defines model_config and concept_config)")
     parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "hf")
-    parser.add_argument("--files", nargs="+", choices=list(FILES), default=None)
+    parser.add_argument("--files", nargs="+", default=None)
     args = parser.parse_args()
+
+    arch, concept = _load_training_config(args.config)
+
+    FILES = {
+        "config.json":                lambda: compact_json(build_config_json(arch, concept)),
+        "tokenizer_config.json":      lambda: compact_json(build_tokenizer_config_json()),
+        "configuration_steerling.py": lambda: build_configuration_py(arch, concept),
+        "tokenization_steerling.py":  build_tokenization_py,
+        "modeling_steerling.py":      build_modeling_py,
+    }
+
+    if args.files:
+        unknown = set(args.files) - set(FILES)
+        if unknown:
+            parser.error(f"Unknown files: {unknown}. Valid: {list(FILES)}")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     to_gen = args.files or list(FILES)
@@ -460,7 +533,7 @@ def main():
         try:
             content = FILES[fname]()
             if fname.endswith(".py"):
-                ast.parse(content)  # validate before writing
+                ast.parse(content)
             (args.output_dir / fname).write_text(content)
             print(f"  ✓ {fname} ({len(content.splitlines())} lines)")
         except SyntaxError as e:

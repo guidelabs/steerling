@@ -12,6 +12,7 @@ Steerling-8B combines masked diffusion language modeling with concept decomposit
 
 ```bash
 uv pip install steerling
+source .venv/bin/activate
 ```
 
 ```python
@@ -69,9 +70,8 @@ uv pip install steerling
 # From source
 git clone https://github.com/guidelabs/steerling.git
 cd steerling
-uv pip install -e ".[dev]"        # full dev environment
-uv pip install -e ".[eval]"       # evaluation dependencies only
-uv pip install -e ".[notebook]"   # notebook dependencies only
+uv sync --extra dev    # full dev environment
+source .venv/bin/activate
 ```
 
 **Note:** PyTorch is installed with CUDA 12.8 support automatically via the PyTorch index configured in `pyproject.toml`. If you need a different CUDA version, install PyTorch manually before installing steerling.
