@@ -34,13 +34,13 @@ dependencies = [
     "huggingface-hub >= 0.20.0",
     "pydantic ~= 2.10.0",
     "numpy ~= 2.3.0",
+    "pandas ~= 2.2.3",
 ]
 
 # LM evaluation harness
 [project.optional-dependencies]
 eval = [
     "lm-eval ~= 0.4.0",
-    "pandas ~= 2.2.3",
     "tqdm ~= 4.67.1",
 ]
 
@@ -75,6 +75,7 @@ dev = [
     "steerling[notebook]",
     "steerling[test]",
     "steerling[dev-tools]",
+    "steerling[type-check]",
 ]
 
 [project.urls]
