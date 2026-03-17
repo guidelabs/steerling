@@ -109,6 +109,7 @@ python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_
 |----------|-------------|
 | [generation.ipynb](notebooks/generation.ipynb) | Text generation — block-by-block unmasking, special tokens, early stopping with `<\|endofchunk\|>` |
 | [logit_contribution.ipynb](notebooks/logit_contribution.ipynb) | Decompose each predicted token's logit into known concept, discovered concept, and residual contributions |
+| [chunk_level_concept_attribution.ipynb](notebooks/chunk_level_concept_attribution.ipynb) | Attribute generated text chunks to known concepts using normalized feature contributions |
 
 ## FAQ
 
