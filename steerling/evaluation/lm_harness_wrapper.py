@@ -80,9 +80,7 @@ class SteerlingLM(LM):
                 torch.set_float32_matmul_precision("high")
 
         # Load model via SteerlingGenerator (handles AutoModel + fallback)
-        gen = SteerlingGenerator.from_pretrained(
-            model_path, device=device, dtype=torch.bfloat16
-        )
+        gen = SteerlingGenerator.from_pretrained(model_path, device=device, dtype=torch.bfloat16)
 
         self.generator = gen
         self.model = gen.model
@@ -244,9 +242,7 @@ class SteerlingLM(LM):
         if self.mc_num <= 0:
             return 0.0, False
 
-        seq = torch.tensor(
-            context_tokens + continuation_tokens, dtype=torch.long, device=self._torch_device
-        )
+        seq = torch.tensor(context_tokens + continuation_tokens, dtype=torch.long, device=self._torch_device)
         prompt_len = len(context_tokens)
         cont_len = len(continuation_tokens)
 
@@ -312,9 +308,7 @@ class SteerlingLM(LM):
                     results.append((0.0, False))
                     continue
 
-                log_prob, is_greedy = self._compute_mc_loglikelihood(
-                    context_tokens, continuation_tokens
-                )
+                log_prob, is_greedy = self._compute_mc_loglikelihood(context_tokens, continuation_tokens)
                 results.append((log_prob, is_greedy))
 
         torch.cuda.empty_cache()
@@ -365,9 +359,7 @@ class SteerlingLM(LM):
             gen_length = ((max_gen_toks + block_length - 1) // block_length) * block_length
             steps = self.steps or gen_length
 
-            prompt_tensor = torch.tensor(
-                [context_tokens], dtype=torch.long, device=self._torch_device
-            )
+            prompt_tensor = torch.tensor([context_tokens], dtype=torch.long, device=self._torch_device)
 
             gen_config = GenerationConfig(
                 max_new_tokens=gen_length,

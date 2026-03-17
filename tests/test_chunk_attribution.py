@@ -6,26 +6,25 @@ import pytest
 
 # --- paste the function under test directly ---
 
+
 def concept_label(concept_id: int, concept_type: str = "known") -> str:
     return f"concept_{concept_id}"
 
 
 def chunk_attribution(attr, start, end, batch=0):
     k_idx = attr["known_indices"][batch, start:end]
-    k_c   = attr["known_contributions"][batch, start:end]
+    k_c = attr["known_contributions"][batch, start:end]
     d_idx = attr["disc_indices"][batch, start:end]
-    d_c   = attr["disc_contributions"][batch, start:end]
-    eps   = attr["epsilon"][batch, start:end]
+    d_c = attr["disc_contributions"][batch, start:end]
+    eps = attr["epsilon"][batch, start:end]
 
-    pos_total = (
-        k_c.abs().sum(-1) + d_c.abs().sum(-1) + eps.abs()
-    ).clamp(min=1e-8)
+    pos_total = (k_c.abs().sum(-1) + d_c.abs().sum(-1) + eps.abs()).clamp(min=1e-8)
 
     k_c_norm = k_c / pos_total.unsqueeze(-1)
     d_c_norm = d_c / pos_total.unsqueeze(-1)
 
     def aggregate(idx, contrib_norm):
-        flat_idx  = idx.reshape(-1)
+        flat_idx = idx.reshape(-1)
         flat_norm = contrib_norm.reshape(-1)
         unique_ids, inverse = flat_idx.unique(return_inverse=True)
         mass = torch.zeros(len(unique_ids), device=flat_idx.device)
@@ -39,17 +38,21 @@ def chunk_attribution(attr, start, end, batch=0):
 
     entries = []
     for cid, mass in zip(k_ids.tolist(), k_mass.tolist(), strict=False):
-        entries.append({
-            "label": concept_label(int(cid), "known"),
-            "type": "known",
-            "contribution": mass / T,
-        })
+        entries.append(
+            {
+                "label": concept_label(int(cid), "known"),
+                "type": "known",
+                "contribution": mass / T,
+            }
+        )
     for cid, mass in zip(d_ids.tolist(), d_mass.tolist(), strict=False):
-        entries.append({
-            "label": f"Discovered #{int(cid)}",
-            "type": "discovered",
-            "contribution": mass / T,
-        })
+        entries.append(
+            {
+                "label": f"Discovered #{int(cid)}",
+                "type": "discovered",
+                "contribution": mass / T,
+            }
+        )
 
     eps_pct = float((eps / pos_total).mean()) * 100
 
@@ -58,18 +61,20 @@ def chunk_attribution(attr, start, end, batch=0):
 
 # --- helpers ---
 
+
 def make_attr(known_idx, known_c, disc_idx, disc_c, eps):
     """Wrap lists into the attr dict format, batch size 1."""
     return {
-        "known_indices":      torch.tensor([[known_idx]]),   # [1, 1, K]
+        "known_indices": torch.tensor([[known_idx]]),  # [1, 1, K]
         "known_contributions": torch.tensor([[known_c]]),
-        "disc_indices":       torch.tensor([[disc_idx]]),
+        "disc_indices": torch.tensor([[disc_idx]]),
         "disc_contributions": torch.tensor([[disc_c]]),
-        "epsilon":            torch.tensor([[eps]]),         # [1, 1]
+        "epsilon": torch.tensor([[eps]]),  # [1, 1]
     }
 
 
 # --- tests ---
+
 
 class TestChunkAttribution:
     """
@@ -90,8 +95,10 @@ class TestChunkAttribution:
 
     def _single_pos_attr(self):
         return make_attr(
-            known_idx=[5, 7], known_c=[0.6, -0.4],
-            disc_idx=[2],     disc_c=[0.2],
+            known_idx=[5, 7],
+            known_c=[0.6, -0.4],
+            disc_idx=[2],
+            disc_c=[0.2],
             eps=-0.1,
         )
 
@@ -129,11 +136,11 @@ class TestChunkAttribution:
     def test_same_concept_accumulates_across_positions(self):
         """Concept 5 appears at both positions — contributions should sum."""
         attr = {
-            "known_indices":       torch.tensor([[[5], [5]]]),   # [1, 2, 1]
+            "known_indices": torch.tensor([[[5], [5]]]),  # [1, 2, 1]
             "known_contributions": torch.tensor([[[0.6], [0.3]]]),
-            "disc_indices":        torch.tensor([[[0], [0]]]),
-            "disc_contributions":  torch.tensor([[[0.0], [0.0]]]),
-            "epsilon":             torch.tensor([[0.4, 0.7]]),
+            "disc_indices": torch.tensor([[[0], [0]]]),
+            "disc_contributions": torch.tensor([[[0.0], [0.0]]]),
+            "epsilon": torch.tensor([[0.4, 0.7]]),
         }
         # pos_total_0 = 0.6 + 0.0 + 0.4 = 1.0  → fraction = 0.6
         # pos_total_1 = 0.3 + 0.0 + 0.7 = 1.0  → fraction = 0.3
@@ -145,11 +152,11 @@ class TestChunkAttribution:
     def test_opposing_positions_cancel(self):
         """Same concept with equal and opposite contributions nets to zero."""
         attr = {
-            "known_indices":       torch.tensor([[[3], [3]]]),
+            "known_indices": torch.tensor([[[3], [3]]]),
             "known_contributions": torch.tensor([[[0.5], [-0.5]]]),
-            "disc_indices":        torch.tensor([[[0], [0]]]),
-            "disc_contributions":  torch.tensor([[[0.0], [0.0]]]),
-            "epsilon":             torch.tensor([[0.5, 0.5]]),
+            "disc_indices": torch.tensor([[[0], [0]]]),
+            "disc_contributions": torch.tensor([[[0.0], [0.0]]]),
+            "epsilon": torch.tensor([[0.5, 0.5]]),
         }
         # pos_total = 1.0 at both positions → fractions +0.5 and -0.5 → sum=0
         by_label, _ = chunk_attribution(attr, 0, 2)
@@ -159,11 +166,11 @@ class TestChunkAttribution:
     def test_start_end_slices_correctly(self):
         """Contributions outside [start:end] must not affect the result."""
         attr = {
-            "known_indices":       torch.tensor([[[5], [5], [5]]]),   # [1, 3, 1]
+            "known_indices": torch.tensor([[[5], [5], [5]]]),  # [1, 3, 1]
             "known_contributions": torch.tensor([[[0.9], [0.6], [0.3]]]),
-            "disc_indices":        torch.tensor([[[0], [0], [0]]]),
-            "disc_contributions":  torch.tensor([[[0.0], [0.0], [0.0]]]),
-            "epsilon":             torch.tensor([[0.1, 0.4, 0.7]]),
+            "disc_indices": torch.tensor([[[0], [0], [0]]]),
+            "disc_contributions": torch.tensor([[[0.0], [0.0], [0.0]]]),
+            "epsilon": torch.tensor([[0.1, 0.4, 0.7]]),
         }
         # only look at position 1 (start=1, end=2)
         # pos_total_1 = 0.6 + 0.4 = 1.0 → fraction = 0.6, T=1 → contribution = 0.6
@@ -181,7 +188,7 @@ class TestChunkAttribution:
 
 
 def aggregate(idx, contrib_norm):
-    flat_idx  = idx.reshape(-1)
+    flat_idx = idx.reshape(-1)
     flat_norm = contrib_norm.reshape(-1)
     unique_ids, inverse = flat_idx.unique(return_inverse=True)
     mass = torch.zeros(len(unique_ids), device=flat_idx.device)

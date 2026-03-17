@@ -18,7 +18,9 @@ class TaskSettings(BaseModel):
     mc_num: int = Field(default=128, gt=0, description="Monte Carlo samples for likelihood estimation")
     mc_batch_size: int = Field(default=32, gt=0, description="Batch size per MC forward pass")
     cfg: float = Field(default=0.0, ge=0.0, description="Classifier-free guidance scale")
-    gen_length: int | None = Field(default=None, gt=0, description="Max generation tokens (generation tasks only)")
+    gen_length: int | None = Field(
+        default=None, gt=0, description="Max generation tokens (generation tasks only)"
+    )
     steps: int | None = Field(default=None, gt=0, description="Diffusion steps (generation tasks only)")
 
     model_config = {"extra": "forbid"}

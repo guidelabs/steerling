@@ -229,8 +229,12 @@ class SteerlingGenerator:
         hf_config = getattr(model, "config", None)
 
         if hf_config is not None:
-            config_dict = {k: v for k, v in hf_config.to_dict().items()
-                          if k in CausalDiffusionConfig.model_fields and k not in {"model_type", "transformers_version", "auto_map", "architectures"}}
+            config_dict = {
+                k: v
+                for k, v in hf_config.to_dict().items()
+                if k in CausalDiffusionConfig.model_fields
+                and k not in {"model_type", "transformers_version", "auto_map", "architectures"}
+            }
             model_config = CausalDiffusionConfig.model_validate(config_dict)
             is_interpretable = getattr(hf_config, "interpretable", False)
         else:
@@ -300,21 +304,17 @@ class SteerlingGenerator:
         prompt_len = prompt_tensor.shape[1]
 
         # Initialize: prompt + all-masked generation region
-        x = torch.full(
-            (bsz, prompt_len + gen_length), mask_id, dtype=torch.long, device=self.device
-        )
+        x = torch.full((bsz, prompt_len + gen_length), mask_id, dtype=torch.long, device=self.device)
         x[:, :prompt_len] = prompt_tensor
 
         prompt_index = x != mask_id
 
-        assert gen_length % block_length == 0, (
-            f"max_new_tokens ({gen_length}) must be divisible by block_length ({block_length})"
-        )
+        assert (
+            gen_length % block_length == 0
+        ), f"max_new_tokens ({gen_length}) must be divisible by block_length ({block_length})"
         num_blocks = gen_length // block_length
 
-        assert steps % num_blocks == 0, (
-            f"steps ({steps}) must be divisible by num_blocks ({num_blocks})"
-        )
+        assert steps % num_blocks == 0, f"steps ({steps}) must be divisible by num_blocks ({num_blocks})"
         steps_per_block = steps // num_blocks
 
         # Stop tokens

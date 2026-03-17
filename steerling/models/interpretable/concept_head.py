@@ -1257,9 +1257,7 @@ class ConceptHead(nn.Module):
             concept_weight = self._compute_weights(concept_logits, E)  # type: ignore
 
             assert intervene_ids is not None and intervene_vals is not None
-            concept_weight = self._apply_dense_interventions(
-                concept_weight, intervene_ids, intervene_vals
-            )
+            concept_weight = self._apply_dense_interventions(concept_weight, intervene_ids, intervene_vals)
 
             predicted = self.blocked_mix(concept_weight, E, block_size=self.block_size)
 
