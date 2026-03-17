@@ -35,9 +35,9 @@ try:
     _FLEX_ATTN_AVAILABLE = True
 except ImportError:
     _FLEX_ATTN_AVAILABLE = False
-    BlockMask = None
-    flex_attention = None
-    _dense_to_ordered = None
+    BlockMask: Any = None
+    flex_attention: Any = None
+    _dense_to_ordered: Any = None
 
 if os.environ.get("STEERLING_USE_FLEX_ATTN", "0") != "1":
     _FLEX_ATTN_AVAILABLE = False
@@ -201,7 +201,7 @@ class BlockCausalAttention(nn.Module):
 
         self.c_attn = nn.Linear(config.n_embd, attn_out, bias=use_bias)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=use_bias)
-        self.c_proj.SCALE_INIT = 1
+        self.c_proj.SCALE_INIT = 1  # type: ignore[attr-defined]
 
         # QK Norm
         if getattr(config, "use_qk_norm", False):
@@ -281,10 +281,11 @@ class BlockCausalAttention(nn.Module):
 
         if use_flex:
             block_mask = self._get_block_mask(T, device)
+            assert flex_attention is not None and compiled_flex_attention is not None  # narrowing for ty
             if q.is_cuda:
-                y = compiled_flex_attention(q, k, v, block_mask=block_mask, enable_gqa=True)  # type: ignore
+                y = compiled_flex_attention(q, k, v, block_mask=block_mask, enable_gqa=True)  # type: ignore[operator]
             else:
-                y = flex_attention(q, k, v, block_mask=block_mask, enable_gqa=True)  # type: ignore
+                y = flex_attention(q, k, v, block_mask=block_mask, enable_gqa=True)
         else:
             y = sdpa_with_block_causal_mask(
                 q,

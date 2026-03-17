@@ -17,17 +17,13 @@ Usage:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import pandas as pd
 import torch
 from torch import Tensor
 
 from steerling import GenerationConfig, SteerlingGenerator
-
-# ---------------------------------------------------------------------------
-# Types
-# ---------------------------------------------------------------------------
 
 
 class AttributionEntry(TypedDict):
@@ -44,11 +40,6 @@ class AttributionResult(TypedDict):
     epsilon: Tensor  # (B, T)
 
 
-# ---------------------------------------------------------------------------
-# Concept label lookup
-# ---------------------------------------------------------------------------
-
-
 class ConceptLabels:
     """Maps concept IDs to human-readable labels from a CSV file."""
 
@@ -60,9 +51,9 @@ class ConceptLabels:
                 print(f"Loaded {len(self._df)} concept labels from {p}")
             else:
                 print(f"Concept file not found at {p} — using fallback labels")
-                self._df = pd.DataFrame(columns=["concept_idx", "concept_name"])
+                self._df = pd.DataFrame(columns=pd.Index(["concept_idx", "concept_name"]))
         else:
-            self._df = pd.DataFrame(columns=["concept_idx", "concept_name"])
+            self._df = pd.DataFrame(columns=pd.Index(["concept_idx", "concept_name"]))
 
     def label(self, concept_id: int, concept_type: str = "known") -> str:
         if concept_type == "discovered":
@@ -71,11 +62,6 @@ class ConceptLabels:
         if len(row) == 0:
             return f"Known #{concept_id}"
         return str(row.iloc[0]["concept_name"])
-
-
-# ---------------------------------------------------------------------------
-# Core attribution functions
-# ---------------------------------------------------------------------------
 
 
 @torch.no_grad()
@@ -115,6 +101,7 @@ def compute_concept_attribution(
             return None
         emb = head._get_embedding(topk_idx)  # (B, T, k, D)
         dots = torch.einsum("btkd,btd->btk", emb, W_y)  # (B, T, k)
+        assert topk_logits is not None  # narrowing for type
         w = torch.sigmoid(topk_logits.float())  # (B, T, k)
         return topk_idx, w * dots
 
@@ -259,11 +246,6 @@ def chunk_attribution(
     return entries, eps_pct
 
 
-# ---------------------------------------------------------------------------
-# High-level interface
-# ---------------------------------------------------------------------------
-
-
 class ConceptAttributor:
     """
     High-level interface for concept attribution on Steerling models.
@@ -286,7 +268,7 @@ class ConceptAttributor:
         concepts_path: Path | str | None = None,
     ):
         self.generator = generator
-        self.backbone = generator.model.model if hasattr(generator.model, "model") else generator.model
+        self.backbone: Any = generator.model.model if hasattr(generator.model, "model") else generator.model
         self.device = generator.device
         self.labels = ConceptLabels(concepts_path)
 

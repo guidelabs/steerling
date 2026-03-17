@@ -638,8 +638,8 @@ class ConceptHead(nn.Module):
             # Factorized features:
             # weights @ E_chunk = weights @ (coef_chunk @ basis)
             #                   = (weights @ coef_chunk) @ basis
-            weighted_coef = weights_chunk @ coef_chunk.float()  # (BT, r)  # type: ignore
-            features_chunk = weighted_coef @ basis_weight.T.to(weighted_coef.dtype)  # (BT, D)  # type: ignore
+            weighted_coef = weights_chunk @ coef_chunk.float()  # (BT, r)
+            features_chunk = weighted_coef @ basis_weight.T.to(weighted_coef.dtype)  # (BT, D)
 
             output.add_(features_chunk)
 
@@ -1192,7 +1192,7 @@ class ConceptHead(nn.Module):
 
         return weights
 
-    @torch.compiler.disable
+    @torch.compiler.disable  # type: ignore[attr-defined]
     def forward(
         self,
         hidden: Tensor,
@@ -1254,7 +1254,7 @@ class ConceptHead(nn.Module):
                     raw_logits = self.concept_predictor(hidden)[..., :n_valid]  # type: ignore
                 concept_logits = raw_logits.float().clamp(-15, 15)
 
-            concept_weight = self._compute_weights(concept_logits, E)  # type: ignore
+            concept_weight = self._compute_weights(concept_logits, E)
 
             assert intervene_ids is not None and intervene_vals is not None
             concept_weight = self._apply_dense_interventions(concept_weight, intervene_ids, intervene_vals)
@@ -1270,7 +1270,7 @@ class ConceptHead(nn.Module):
                     predicted, topk_indices, topk_logits = self.attention_features_topk_factorized(
                         query,
                         k=k_features,  # type: ignore
-                        block_size=self.block_size,  # type: ignore
+                        block_size=self.block_size,
                     )
                 else:
                     predicted = self.attention_block_features_factorized(query, block_size=self.block_size)
@@ -1279,7 +1279,7 @@ class ConceptHead(nn.Module):
                     predicted, topk_indices, topk_logits = self.linear_features_topk_factorized(
                         hidden,
                         k=k_features,  # type: ignore
-                        block_size=self.block_size,  # type: ignore
+                        block_size=self.block_size,
                     )
                 else:
                     predicted = self.linear_block_features_factorized(hidden, block_size=self.block_size)
@@ -1327,7 +1327,7 @@ class ConceptHead(nn.Module):
             and self.topk_features > self.topk
         ):
             _, rerank_idx = torch.topk(topk_logits, self.topk, dim=-1)  # type: ignore
-            topk_indices = torch.gather(topk_indices, -1, rerank_idx)  # type: ignore
+            topk_indices = torch.gather(topk_indices, -1, rerank_idx)
             topk_logits = torch.gather(topk_logits, -1, rerank_idx)  # type: ignore
 
         # --- Step 2: Optionally compute dense logits/weights for analysis ---
@@ -1346,7 +1346,7 @@ class ConceptHead(nn.Module):
                     raw_logits = self.concept_predictor(hidden)[..., :n_valid]  # type: ignore
                 concept_logits = raw_logits.float().clamp(-15, 15)
 
-            concept_weight = self._compute_weights(concept_logits, E)  # type: ignore
+            concept_weight = self._compute_weights(concept_logits, E)
 
         # Debug: log which path was taken (once per head)
         if not hasattr(self, "_logged_forward_path"):

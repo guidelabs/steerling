@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention.flex_attention import flex_attention
-
 from transformers import AutoModel
 
 import steerling.models.layers.causal_diffusion_layers as layers
@@ -202,7 +201,7 @@ class SteerlingGenerator:
         if hasattr(model, "transformer"):
             model.transformer._restore_weight_tying()  # type: ignore
         elif hasattr(model, "_restore_weight_tying"):
-            model._restore_weight_tying()  # type: ignore
+            model._restore_weight_tying()
 
         if dtype is not None:
             model = model.to(dtype=dtype)
@@ -359,7 +358,7 @@ class SteerlingGenerator:
                 # Unmask top-k most confident positions
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool)
                 for j in range(bsz):
-                    k = num_transfer[j, step].item()
+                    k = int(num_transfer[j, step].item())
                     if k > 0:
                         _, select_index = torch.topk(confidence[j], k=k)
                         transfer_index[j, select_index] = True

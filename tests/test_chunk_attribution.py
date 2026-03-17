@@ -1,10 +1,7 @@
 """Tests for chunk_attribution."""
 
-import torch
 import pytest
-
-
-# --- paste the function under test directly ---
+import torch
 
 
 def concept_label(concept_id: int, concept_type: str = "known") -> str:
