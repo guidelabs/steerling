@@ -54,16 +54,22 @@ class TestGenerationConfig:
     def test_defaults(self):
         config = GenerationConfig()
         assert config.max_new_tokens == 256
-        assert config.temperature == 1.0
-        assert config.steer_known is None
+        assert config.steps == 256
+        assert config.temperature == 0.0
+        assert config.cfg_scale == 0.0
+        assert config.seed is None
+        assert config.stop_tokens is None
 
-    def test_steering(self):
-        config = GenerationConfig(steer_known={0: 2.0, 1: -1.0})
-        assert config.steer_known[0] == 2.0
-        assert config.steer_known[1] == -1.0
+    def test_stop_tokens(self):
+        config = GenerationConfig(stop_tokens=[1, 2, 3])
+        assert config.stop_tokens == [1, 2, 3]
 
     def test_validation(self):
         with pytest.raises(ValidationError):
             GenerationConfig(max_new_tokens=-1)
         with pytest.raises(ValidationError):
-            GenerationConfig(top_p=1.5)
+            GenerationConfig(temperature=-0.1)
+
+    def test_extra_fields_forbidden(self):
+        with pytest.raises(ValidationError):
+            GenerationConfig(bogus_field=True)

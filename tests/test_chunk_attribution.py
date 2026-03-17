@@ -38,13 +38,13 @@ def chunk_attribution(attr, start, end, batch=0):
     T = end - start
 
     entries = []
-    for cid, mass in zip(k_ids.tolist(), k_mass.tolist()):
+    for cid, mass in zip(k_ids.tolist(), k_mass.tolist(), strict=False):
         entries.append({
             "label": concept_label(int(cid), "known"),
             "type": "known",
             "contribution": mass / T,
         })
-    for cid, mass in zip(d_ids.tolist(), d_mass.tolist()):
+    for cid, mass in zip(d_ids.tolist(), d_mass.tolist(), strict=False):
         entries.append({
             "label": f"Discovered #{int(cid)}",
             "type": "discovered",
@@ -216,7 +216,7 @@ class TestAggregate:
             torch.tensor([[1, 2], [3, 1]]),
             torch.tensor([[0.3, 0.5], [0.2, 0.1]]),
         )
-        result = dict(zip(ids.tolist(), mass.tolist()))
+        result = dict(zip(ids.tolist(), mass.tolist(), strict=False))
         assert pytest.approx(result[1], abs=1e-6) == 0.4  # 0.3 + 0.1
         assert pytest.approx(result[2], abs=1e-6) == 0.5
         assert pytest.approx(result[3], abs=1e-6) == 0.2

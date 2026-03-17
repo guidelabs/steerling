@@ -22,6 +22,7 @@ from lm_eval.api.registry import register_model
 from tqdm import tqdm
 
 from steerling.configs.evaluation import get_task_settings
+from steerling.configs.generation import GenerationConfig
 from steerling.inference.causal_diffusion import SteerlingGenerator
 
 logger = logging.getLogger(__name__)
@@ -367,18 +368,17 @@ class SteerlingLM(LM):
             prompt_tensor = torch.tensor(
                 [context_tokens], dtype=torch.long, device=self._torch_device
             )
-            prompt_len = prompt_tensor.shape[1]
 
-            output = self.generator.generate(
-                prompt=prompt_tensor,
+            gen_config = GenerationConfig(
+                max_new_tokens=gen_length,
                 steps=steps,
-                gen_length=gen_length,
                 temperature=temperature,
                 cfg_scale=self.cfg,
                 stop_tokens=stop_token_ids or None,
             )
 
-            generated_text = self.generator.decode(output, prompt_len=prompt_len)
+            gen_output = self.generator.generate_full(prompt_tensor, gen_config)
+            generated_text = gen_output.text
 
             # Truncate at stop strings
             for stop_str in until:

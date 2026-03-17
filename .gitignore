@@ -28,6 +28,8 @@ share/python-wheels/
 *.egg
 MANIFEST
 CLAUDE.md
+debug*
+changes*
 notebooks/generation_from_weights.ipynb
 notebooks/simple_walk_through.ipynb
 scripts/benchmark_speed.py
@@ -222,3 +224,7 @@ __marimo__/
 .env
 logs/
 jobs/
+
+# Backup files from API migration
+*_old.py
+*_old.ipynb

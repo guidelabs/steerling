@@ -21,7 +21,7 @@ class TestSteerlingGenerator:
 
     def test_generate_produces_text(self, tiny_config, tokenizer, device):
         gen = self._make_generator(tiny_config, tokenizer, device)
-        config = GenerationConfig(max_new_tokens=10, seed=42)
+        config = GenerationConfig(max_new_tokens=16, steps=16, seed=42)
         output = gen.generate_full("Hello", config)
 
         assert output.generated_tokens > 0
@@ -30,7 +30,7 @@ class TestSteerlingGenerator:
 
     def test_generate_deterministic(self, tiny_config, tokenizer, device):
         gen = self._make_generator(tiny_config, tokenizer, device)
-        config = GenerationConfig(max_new_tokens=10, seed=42)
+        config = GenerationConfig(max_new_tokens=16, steps=16, seed=42)
 
         text1 = gen.generate("Hello", config)
         text2 = gen.generate("Hello", config)
@@ -38,9 +38,9 @@ class TestSteerlingGenerator:
 
     def test_generate_respects_max_tokens(self, tiny_config, tokenizer, device):
         gen = self._make_generator(tiny_config, tokenizer, device)
-        config = GenerationConfig(max_new_tokens=5, seed=42)
+        config = GenerationConfig(max_new_tokens=16, steps=16, seed=42)
         output = gen.generate_full("Hello", config)
-        assert output.generated_tokens <= 5
+        assert output.generated_tokens <= 16
 
     def test_repr(self, tiny_config, tokenizer, device):
         gen = self._make_generator(tiny_config, tokenizer, device)

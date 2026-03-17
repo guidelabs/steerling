@@ -9,6 +9,7 @@ Main user-facing API for:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -21,6 +22,7 @@ from transformers import AutoModel
 import steerling.models.layers.causal_diffusion_layers as layers
 from steerling.configs.causal_diffusion import CausalDiffusionConfig
 from steerling.configs.concept import ConceptConfig
+from steerling.configs.generation import GenerationConfig
 from steerling.data.tokenizer import SteerlingTokenizer
 from steerling.inference.checkpoint_utils import load_config, load_state_dict
 from steerling.models.causal_diffusion import CausalDiffusionLM
@@ -29,6 +31,21 @@ from steerling.models.interpretable.interpretable_causal_diffusion import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GenerationOutput:
+    """Output from generation."""
+
+    text: str
+    tokens: torch.Tensor
+    prompt_tokens: int
+    generated_tokens: int
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +85,7 @@ class SteerlingGenerator:
 
     Example:
         generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b")
-        out = generator.generate("Once upon a time", gen_length=128, steps=128)
-        print(generator.decode(out))
+        text = generator.generate("Once upon a time", GenerationConfig(max_new_tokens=128))
     """
 
     def __init__(
@@ -235,17 +251,17 @@ class SteerlingGenerator:
     # Generation
     # ------------------------------------------------------------------
 
-    @torch.no_grad()
-    def generate(
+    @torch.inference_mode()
+    def generate(self, prompt: str, config: GenerationConfig) -> str:
+        """Generate text from a prompt. Returns generated text only."""
+        return self.generate_full(prompt, config).text
+
+    @torch.inference_mode()
+    def generate_full(
         self,
         prompt: str | torch.Tensor,
-        steps: int = 128,
-        gen_length: int = 128,
-        block_length: int | None = None,
-        temperature: float = 0.0,
-        cfg_scale: float = 0.0,
-        stop_tokens: list[int] | None = None,
-    ) -> torch.Tensor:
+        config: GenerationConfig,
+    ) -> GenerationOutput:
         """
         Generate text via block-by-block confidence-based unmasking.
 
@@ -256,18 +272,20 @@ class SteerlingGenerator:
 
         Args:
             prompt: Input text string or token tensor of shape (B, L).
-            steps: Total denoising steps (split evenly across blocks).
-            gen_length: Number of tokens to generate (must be divisible by block_length).
-            block_length: Block size. Defaults to config diff_block_size.
-            temperature: Gumbel noise temperature (0 = greedy).
-            cfg_scale: Classifier-free guidance scale (0 = disabled).
-            stop_tokens: Token IDs that trigger early stop between blocks.
+            config: Generation configuration.
 
         Returns:
-            Full sequence tensor (prompt + generated), shape (B, L + gen_length).
+            GenerationOutput with text, tokens, and counts.
         """
-        if block_length is None:
-            block_length = self.diff_block_size
+        gen_length = config.max_new_tokens
+        steps = config.steps
+        temperature = config.temperature
+        cfg_scale = config.cfg_scale
+
+        if config.seed is not None:
+            torch.manual_seed(config.seed)
+
+        block_length = self.diff_block_size
         mask_id = self.mask_token_id
 
         # Encode prompt
@@ -276,6 +294,7 @@ class SteerlingGenerator:
             prompt_tensor = torch.tensor([prompt_ids], dtype=torch.long, device=self.device)
         else:
             prompt_tensor = prompt.to(self.device)
+            prompt_ids = prompt_tensor[0].tolist()
 
         bsz = prompt_tensor.shape[0]
         prompt_len = prompt_tensor.shape[1]
@@ -289,7 +308,7 @@ class SteerlingGenerator:
         prompt_index = x != mask_id
 
         assert gen_length % block_length == 0, (
-            f"gen_length ({gen_length}) must be divisible by block_length ({block_length})"
+            f"max_new_tokens ({gen_length}) must be divisible by block_length ({block_length})"
         )
         num_blocks = gen_length // block_length
 
@@ -297,6 +316,9 @@ class SteerlingGenerator:
             f"steps ({steps}) must be divisible by num_blocks ({num_blocks})"
         )
         steps_per_block = steps // num_blocks
+
+        # Stop tokens
+        stop_tokens: list[int] = list(config.stop_tokens or [])
 
         for block_idx in range(num_blocks):
             block_start = prompt_len + block_idx * block_length
@@ -350,7 +372,24 @@ class SteerlingGenerator:
                 if any((generated == t).any() for t in stop_tokens):
                     break
 
-        return x
+        # Extract generated tokens (strip mask tokens, truncate at first stop token)
+        gen_ids = x[0, prompt_len:].tolist()
+        final_tokens = []
+        for t in gen_ids:
+            if t == mask_id:
+                continue
+            if t in stop_tokens:
+                break
+            final_tokens.append(t)
+
+        text = self.tokenizer.decode(final_tokens)
+
+        return GenerationOutput(
+            text=text,
+            tokens=x[0],
+            prompt_tokens=prompt_len,
+            generated_tokens=len(final_tokens),
+        )
 
     def decode(self, output: torch.Tensor, prompt_len: int | None = None, skip_special: bool = True) -> str:
         """Decode generated tensor to text, stripping mask tokens."""

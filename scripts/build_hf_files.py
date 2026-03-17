@@ -36,10 +36,10 @@ def _load_training_config(config_path: Path) -> tuple[dict, dict]:
     variables: dict[str, object] = {}
     for m in re.finditer(r"^(\w+)\s*=\s*(.+?)$", source, re.MULTILINE):
         name, expr = m.group(1), m.group(2).strip()
-        try:
+        try:  # noqa: SIM105
             variables[name] = ast.literal_eval(expr)
-        except (ValueError, SyntaxError):
-            pass
+        except (ValueError, SyntaxError): 
+            pass 
 
     def _resolve(val_str: str) -> object:
         val_str = val_str.strip().rstrip(",")
