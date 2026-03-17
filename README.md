@@ -19,14 +19,15 @@ source .venv/bin/activate
 import torch
 from transformers import AutoModel, AutoTokenizer
 from steerling import SteerlingGenerator
+from steerling.configs.generation import GenerationConfig
 
 model = AutoModel.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True, torch_dtype=torch.bfloat16)
 tokenizer = AutoTokenizer.from_pretrained("guidelabs/steerling-8b", trust_remote_code=True)
 generator = SteerlingGenerator.from_model(model, tokenizer, device="cuda")
 
 prompt = "The key to understanding neural networks is"
-output = generator.generate(prompt, gen_length=128, steps=128, temperature=0.4)
-text = generator.decode(output, prompt_len=len(tokenizer.encode(prompt)))
+config = GenerationConfig(max_new_tokens=128, steps=128, temperature=0.4)
+text = generator.generate(prompt, config)
 print(text)
 ```
 
