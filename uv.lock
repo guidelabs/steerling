@@ -2950,6 +2950,7 @@ source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "numpy" },
+    { name = "pandas" },
     { name = "pydantic" },
     { name = "safetensors" },
     { name = "tiktoken" },
@@ -2965,12 +2966,12 @@ dev = [
     { name = "jupyter" },
     { name = "lm-eval" },
     { name = "matplotlib" },
-    { name = "pandas" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "seaborn" },
     { name = "tqdm" },
+    { name = "ty" },
 ]
 dev-tools = [
     { name = "pre-commit" },
@@ -2978,7 +2979,6 @@ dev-tools = [
 ]
 eval = [
     { name = "lm-eval" },
-    { name = "pandas" },
     { name = "tqdm" },
 ]
 notebook = [
@@ -3004,7 +3004,7 @@ requires-dist = [
     { name = "lm-eval", marker = "extra == 'eval'", specifier = "~=0.4.0" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = "~=3.9.2" },
     { name = "numpy", specifier = "~=2.3.0" },
-    { name = "pandas", marker = "extra == 'eval'", specifier = "~=2.2.3" },
+    { name = "pandas", specifier = "~=2.2.3" },
     { name = "pre-commit", marker = "extra == 'dev-tools'", specifier = "~=4.0.1" },
     { name = "pydantic", specifier = "~=2.10.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = "~=8.3.0" },
@@ -3015,6 +3015,7 @@ requires-dist = [
     { name = "steerling", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "steerling", extras = ["notebook"], marker = "extra == 'dev'" },
     { name = "steerling", extras = ["test"], marker = "extra == 'dev'" },
+    { name = "steerling", extras = ["type-check"], marker = "extra == 'dev'" },
     { name = "tiktoken", specifier = "~=0.8.0" },
     { name = "torch", specifier = "~=2.8.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "tqdm", marker = "extra == 'eval'", specifier = "~=4.67.1" },
