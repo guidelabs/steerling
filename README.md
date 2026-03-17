@@ -1,4 +1,10 @@
 # Steerling
+[![PyPI version](https://img.shields.io/pypi/v/steerling)](https://pypi.org/project/steerling/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/pypi/pyversions/steerling)](https://pypi.org/project/steerling/)
+[![HuggingFace](https://img.shields.io/badge/🤗-guidelabs/steerling--8b-yellow)](https://huggingface.co/guidelabs/steerling-8b)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen)](https://github.com/pre-commit/pre-commit)
 
 An interpretable causal diffusion language model.
 
@@ -7,6 +13,8 @@ Steerling-8B combines masked diffusion language modeling with concept decomposit
 - **Attribution**: Decompose predictions into known concept contributions
 - **Steering**: Intervene on concept activations to control generation
 - **Embeddings**: Extract hidden, composed, known, or discovered representations
+
+For more information, tutorials, and updates, visit [guidelabs.ai](https://www.guidelabs.ai). To learn more about the architecture behind Steerling, check out our blog posts on [Scaling Interpretable Models with 8B Parameters](https://www.guidelabs.ai/post/scaling-interpretable-models-8b/) and [Causal Diffusion Language Models](https://www.guidelabs.ai/post/block-causal-diffusion-language-model/).
 
 ## Quick Start
 
