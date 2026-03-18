@@ -70,6 +70,16 @@ h → known_features + unk_hat + epsilon = composed → lm_head → logits
 - `unk_hat`: Residual features captured by a factorized discovered concept head
 - `epsilon`: Small correction term for reconstruction fidelity
 
+## Interpretability
+
+Every prediction Steerling makes can be decomposed into three components: **known concepts** (human-interpretable features), **discovered concepts** (learned residual features), and **epsilon** (reconstruction correction). The plot below shows the fraction of each token's logit attributable to each component:
+
+<p align="center">
+  <img src="assets/images/logit_contribution.png.jpg" width="95%" alt="Per-token logit contribution decomposition" />
+</p>
+
+See [logit_contribution.ipynb](notebooks/logit_contribution.ipynb) for per-token decomposition and [chunk_level_concept_attribution.ipynb](notebooks/chunk_level_concept_attribution.ipynb) for chunk-level concept attribution.
+
 ## Installation
 
 ```bash

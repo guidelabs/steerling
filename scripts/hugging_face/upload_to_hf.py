@@ -2,7 +2,8 @@
 """Upload Steerling model to HuggingFace Hub.
 
 Usage:
-    python scripts/hf/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name
+    python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name
+    python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name --skip-weights
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Upload Steerling to HuggingFace Hub")
     parser.add_argument("--model-path", type=str, required=True, help="Path to safetensor weights directory")
     parser.add_argument("--repo-id", type=str, required=True, help="HuggingFace repo ID (e.g. org/model-name)")
+    parser.add_argument("--skip-weights", action="store_true", help="Skip uploading weight files")
     args = parser.parse_args()
 
     weights_dir = Path(args.model_path)
@@ -59,6 +61,11 @@ def main() -> None:
             repo_id=args.repo_id,
             commit_message=f"Update {filename}",
         )
+
+    if args.skip_weights:
+        print("\n--- Skipping weights (--skip-weights flag set) ---")
+        print(f"\nDone! https://huggingface.co/{args.repo_id}")
+        return
 
     # Upload weights
     print("\n--- Uploading weights ---")

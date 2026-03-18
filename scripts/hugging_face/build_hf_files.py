@@ -5,8 +5,8 @@ Reads model and concept configs from a scalex training config file
 and inlines source files — no hardcoded values.
 
 Usage:
-    python scripts/hf/build_hf_files.py --config /path/to/training_config.py
-    python scripts/hf/build_hf_files.py --config /path/to/training_config.py --output-dir custom/hf/path
+    python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py
+    python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py --output-dir custom/hf/path
 """
 
 from __future__ import annotations

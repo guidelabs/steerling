@@ -5,7 +5,7 @@
 1. **Build HF-compatible files** from a training config:
 
    ```bash
-   python scripts/hf/build_hf_files.py --config /path/to/training_config.py
+   python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py
    ```
 
    This generates the following files in `hf/`:
@@ -18,7 +18,7 @@
 2. **Upload to HuggingFace Hub**:
 
    ```bash
-   python scripts/hf/upload_to_hf.py --model-path /path/to/weights --repo-id guidelabs/steerling-8b
+   python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id guidelabs/steerling-8b
    ```
 
    This uploads the generated HF files and safetensor weights to the specified repo.
