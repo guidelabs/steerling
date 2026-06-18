@@ -6,6 +6,7 @@ and inlines source files — no hardcoded values.
 
 Usage:
     python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py
+    python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py --instruct
     python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py --output-dir custom/hf/path
 """
 
@@ -38,8 +39,8 @@ def _load_training_config(config_path: Path) -> tuple[dict, dict]:
         name, expr = m.group(1), m.group(2).strip()
         try:  # noqa: SIM105
             variables[name] = ast.literal_eval(expr)
-        except (ValueError, SyntaxError): 
-            pass 
+        except (ValueError, SyntaxError):
+            pass
 
     def _resolve(val_str: str) -> object:
         val_str = val_str.strip().rstrip(",")
@@ -102,21 +103,36 @@ def compact_json(obj: dict) -> str:
 
 
 # ===========================================================================
+# Chat template (Jinja2)
+# ===========================================================================
+
+CHAT_TEMPLATE = (
+    "{% for message in messages %}"
+    "<|start_header_id|>{{ message['role'] }}<|end_header_id|>\n\n"
+    "{{ message['content'] }}<|endofchunk|><|eot_id|>"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}"
+    "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    "{% endif %}"
+)
+
+
+# ===========================================================================
 # JSON configs
 # ===========================================================================
 
-def build_config_json(arch: dict, concept: dict) -> dict:
+def build_config_json(arch: dict, concept: dict, *, instruct: bool = False) -> dict:
     from steerling.configs.causal_diffusion import CausalDiffusionConfig
     from steerling.configs.concept import ConceptConfig
     from steerling.data.tokenizer import SteerlingTokenizer
 
-    tok = SteerlingTokenizer()
+    tok = SteerlingTokenizer(instruct=instruct)
     arch_defaults = {name: f.default for name, f in CausalDiffusionConfig.model_fields.items() if not f.is_required()}
     concept_defaults = {name: f.default for name, f in ConceptConfig.model_fields.items() if not f.is_required()}
     a = {**arch_defaults, **arch}
     c = {**concept_defaults, **concept}
 
-    return {
+    config = {
         "model_type": "steerling",
         "auto_map": {
             "AutoConfig": "configuration_steerling.SteerlingConfig",
@@ -175,17 +191,29 @@ def build_config_json(arch: dict, concept: dict) -> dict:
         "transformers_version": "4.48.0",
     }
 
+    if instruct:
+        config["start_header_id"] = tok.start_header_id
+        config["end_header_id"] = tok.end_header_id
+        config["eot_id"] = tok.eot_id
 
-def build_tokenizer_config_json() -> dict:
+    return config
+
+
+def build_tokenizer_config_json(*, instruct: bool = False) -> dict:
     from steerling.data.tokenizer import SteerlingTokenizer
-    tok = SteerlingTokenizer()
-    return {
+    tok = SteerlingTokenizer(instruct=instruct)
+
+    additional_special = ["<|endofchunk|>", "<|mask|>"]
+    if instruct:
+        additional_special.extend(["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"])
+
+    config = {
         "tokenizer_class": "SteerlingTokenizer",
         "auto_map": {"AutoTokenizer": ["tokenization_steerling.SteerlingTokenizer", None]},
         "pad_token": "<|pad|>",
         "bos_token": "<|bos|>",
         "eos_token": "<|endoftext|>",
-        "additional_special_tokens": ["<|endofchunk|>", "<|mask|>"],
+        "additional_special_tokens": additional_special,
         "encoding_name": SteerlingTokenizer.ENCODING_NAME,
         "pad_token_id": tok.pad_token_id,
         "bos_token_id": tok.bos_token_id,
@@ -194,17 +222,25 @@ def build_tokenizer_config_json() -> dict:
         "mask_token_id": tok.mask_token_id,
     }
 
+    if instruct:
+        config["start_header_id"] = tok.start_header_id
+        config["end_header_id"] = tok.end_header_id
+        config["eot_id"] = tok.eot_id
+        config["chat_template"] = CHAT_TEMPLATE
+
+    return config
+
 
 # ===========================================================================
 # Python files
 # ===========================================================================
 
-def build_configuration_py(arch: dict, concept: dict) -> str:
+def build_configuration_py(arch: dict, concept: dict, *, instruct: bool = False) -> str:
     from steerling.configs.causal_diffusion import CausalDiffusionConfig
     from steerling.configs.concept import ConceptConfig
     from steerling.data.tokenizer import SteerlingTokenizer
 
-    tok = SteerlingTokenizer()
+    tok = SteerlingTokenizer(instruct=instruct)
     arch_defaults = {name: f.default for name, f in CausalDiffusionConfig.model_fields.items() if not f.is_required()}
     concept_defaults = {name: f.default for name, f in ConceptConfig.model_fields.items() if not f.is_required()}
     arch = {**arch_defaults, **arch}
@@ -226,12 +262,20 @@ def build_configuration_py(arch: dict, concept: dict) -> str:
         "inject_layer", "inject_alpha",
     ]
 
+    if instruct:
+        assigns.extend(["start_header_id", "end_header_id", "eot_id"])
+
     params = {**arch, **concept,
         "vocab_size": tok.vocab_size,
         "mask_token_id": tok.mask_token_id,
         "endofchunk_token_id": tok.endofchunk_token_id,
         "concept_block_size": concept["block_size"],
     }
+
+    if instruct:
+        params["start_header_id"] = tok.start_header_id
+        params["end_header_id"] = tok.end_header_id
+        params["eot_id"] = tok.eot_id
 
     def fmt(v):
         if isinstance(v, str):
@@ -267,9 +311,9 @@ class SteerlingConfig(PretrainedConfig):
 '''
 
 
-def build_tokenization_py() -> str:
+def build_tokenization_py(*, instruct: bool = False) -> str:
     from steerling.data.tokenizer import SteerlingTokenizer
-    tok = SteerlingTokenizer()
+    tok = SteerlingTokenizer(instruct=instruct)
     enc = SteerlingTokenizer.ENCODING_NAME
 
     core = _read_source("steerling/data/tokenizer.py")
@@ -282,6 +326,23 @@ def build_tokenization_py() -> str:
     core = re.sub(r"\s*if isinstance\(tokens, torch\.Tensor\):.*?\.tolist\(\)\n", "\n", core, flags=re.DOTALL)
     core = re.sub(r"\s*if isinstance\(tokens, np\.ndarray\):.*?\.tolist\(\)\n", "\n", core, flags=re.DOTALL)
     core = core.replace("class SteerlingTokenizer:", "class _SteerlingTokenizer:")
+
+    instruct_str = "True" if instruct else "False"
+
+    additional_special = '"<|endofchunk|>", "<|mask|>"'
+    if instruct:
+        additional_special += ', "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"'
+
+    instruct_properties = ""
+    if instruct:
+        instruct_properties = """
+    @property
+    def start_header_id(self): return self._core.start_header_id
+    @property
+    def end_header_id(self): return self._core.end_header_id
+    @property
+    def eot_id(self): return self._core.eot_id
+"""
 
     return f'''\
 from __future__ import annotations
@@ -298,13 +359,13 @@ class SteerlingTokenizer(PreTrainedTokenizer):
     def __init__(self, encoding_name="{enc}", pad_token_id={tok.pad_token_id},
                  bos_token_id={tok.bos_token_id}, eos_token_id={tok.eos_token_id},
                  endofchunk_token_id={tok.endofchunk_token_id}, mask_token_id={tok.mask_token_id}, **kwargs):
-        self._core = _SteerlingTokenizer()
+        self._core = _SteerlingTokenizer(instruct={instruct_str})
         self._endofchunk_token_id = endofchunk_token_id
         self._mask_token_id = mask_token_id
         for k in ("pad_token", "bos_token", "eos_token", "additional_special_tokens"):
             kwargs.pop(k, None)
         super().__init__(pad_token="<|pad|>", bos_token="<|bos|>", eos_token="<|endoftext|>",
-                         additional_special_tokens=["<|endofchunk|>", "<|mask|>"], **kwargs)
+                         additional_special_tokens=[{additional_special}], **kwargs)
 
     @property
     def vocab_size(self): return self._core.vocab_size
@@ -312,7 +373,7 @@ class SteerlingTokenizer(PreTrainedTokenizer):
     def endofchunk_token_id(self): return self._core.endofchunk_token_id
     @property
     def mask_token_id(self): return self._core.mask_token_id
-
+{instruct_properties}
     def get_vocab(self): return dict(self._core._tokenizer._special_tokens)
 
     def _tokenize(self, text, **kwargs):
@@ -416,7 +477,7 @@ def build_modeling_py() -> str:
     future = [line for line in all_imports if "from __future__" in line]
     rest   = [line for line in all_imports if "from __future__" not in line]
 
-    header = "# Auto-generated by scripts/build_hf_files_v3.py — do not edit manually.\n\n"
+    header = "# Auto-generated by scripts/build_hf_files.py — do not edit manually.\n\n"
     body_str = "\n".join(all_body)
 
     hf_wrapper = (
@@ -507,16 +568,18 @@ def main():
     parser.add_argument("--config", type=Path, required=True,
                         help="Path to scalex training config file (defines model_config and concept_config)")
     parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "hf")
+    parser.add_argument("--instruct", action="store_true",
+                        help="Generate instruct variant with chat template and instruct tokens")
     parser.add_argument("--files", nargs="+", default=None)
     args = parser.parse_args()
 
     arch, concept = _load_training_config(args.config)
 
     FILES = {
-        "config.json":                lambda: compact_json(build_config_json(arch, concept)),
-        "tokenizer_config.json":      lambda: compact_json(build_tokenizer_config_json()),
-        "configuration_steerling.py": lambda: build_configuration_py(arch, concept),
-        "tokenization_steerling.py":  build_tokenization_py,
+        "config.json":                lambda: compact_json(build_config_json(arch, concept, instruct=args.instruct)),
+        "tokenizer_config.json":      lambda: compact_json(build_tokenizer_config_json(instruct=args.instruct)),
+        "configuration_steerling.py": lambda: build_configuration_py(arch, concept, instruct=args.instruct),
+        "tokenization_steerling.py":  lambda: build_tokenization_py(instruct=args.instruct),
         "modeling_steerling.py":      build_modeling_py,
     }
 
@@ -528,7 +591,8 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     to_gen = args.files or list(FILES)
 
-    print(f"Generating HF files in {args.output_dir}/")
+    variant = "instruct" if args.instruct else "base"
+    print(f"Generating HF files ({variant}) in {args.output_dir}/")
     for fname in to_gen:
         try:
             content = FILES[fname]()

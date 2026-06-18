@@ -8,11 +8,16 @@ from pydantic import BaseModel, Field
 class GenerationConfig(BaseModel):
     """Configuration for text generation with SteerlingGenerator."""
 
-    max_new_tokens: int = Field(default=256, gt=0)
+    max_new_tokens: int = Field(default=1024, gt=0)
     steps: int = Field(default=256, gt=0)
-    temperature: float = Field(default=0.0, ge=0.0)
+    temperature: float = Field(default=1.2, ge=0.0)
     cfg_scale: float = Field(default=0.0, ge=0.0)
     seed: int | None = None
+
+    # Sampling
+    top_p: float = Field(default=0.8, ge=0.0, le=1.0)
+    repetition_penalty: float = Field(default=1.1, ge=1.0)
+    use_entropy_sampling: bool = True
 
     # Stop conditions
     stop_tokens: list[int] | None = None

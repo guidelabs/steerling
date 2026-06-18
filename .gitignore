@@ -34,6 +34,7 @@ notebooks/generation_from_weights.ipynb
 notebooks/simple_walk_through.ipynb
 scripts/benchmark_speed.py
 scripts/build_hf_files_*.py
+scripts/build_hf_files_or.py
 eval_results/
 # PyInstaller
 #  Usually these files are written by a python script from a template

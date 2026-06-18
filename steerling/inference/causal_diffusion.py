@@ -9,6 +9,7 @@ Main user-facing API for:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -75,6 +76,42 @@ def _get_num_transfer_tokens(mask_index: torch.Tensor, steps: int) -> torch.Tens
     return num_transfer
 
 
+def _sample_top_p(
+    probs: torch.Tensor, top_p: float, generator: torch.Generator | None = None
+) -> torch.Tensor:
+    """Nucleus (top-p) sampling from a 1-D probability distribution."""
+    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+    cumulative = torch.cumsum(sorted_probs, dim=-1)
+    keep = (cumulative - sorted_probs) <= top_p
+    keep[0] = True
+    filtered = torch.where(keep, sorted_probs, torch.zeros_like(sorted_probs))
+    filtered = filtered / filtered.sum()
+    return sorted_indices[torch.multinomial(filtered, 1, generator=generator)]
+
+
+def _sample_token(
+    logits_1d: torch.Tensor, config: GenerationConfig, generator: torch.Generator | None = None
+) -> torch.Tensor:
+    """
+    Sample a single token from logits for one position.
+    """
+    if config.use_entropy_sampling:
+        probs_raw = torch.softmax(logits_1d, dim=-1)
+        sorted_probs, _ = torch.sort(probs_raw, descending=True)
+        cumsum = torch.cumsum(sorted_probs, dim=-1)
+        effective_k = max((cumsum <= config.top_p).sum().item() + 1, 2)
+        entropy = -torch.sum(probs_raw * torch.log(probs_raw + 1e-10))
+        normalized_entropy = min(1.0, entropy.item() / math.log(effective_k))
+        temperature = 0.3 + 0.4 * normalized_entropy
+        probs = torch.softmax(logits_1d / temperature, dim=-1)
+        return _sample_top_p(probs, config.top_p, generator).squeeze(0)
+    elif config.top_p > 0.0 and config.temperature > 0.0:
+        probs = torch.softmax(logits_1d / config.temperature, dim=-1)
+        return _sample_top_p(probs, config.top_p, generator).squeeze(0)
+    else:
+        return torch.argmax(logits_1d)
+
+
 class SteerlingGenerator:
     """
     Generator for Steerling models.
@@ -108,6 +145,15 @@ class SteerlingGenerator:
         self.eos_token_id = tokenizer.eos_token_id
         self.pad_token_id = tokenizer.pad_token_id
         self.diff_block_size = model_config.diff_block_size
+
+        # Tokens that should never be generated
+        self._banned_ids = torch.tensor(
+            [tokenizer.mask_token_id, tokenizer.pad_token_id],
+            dtype=torch.long,
+        )
+
+        # EOT token for instruct models
+        self._eot_id = getattr(tokenizer, "eot_id", None)
 
         logger.info(f"SteerlingGenerator initialized on {self.device}")
 
@@ -147,7 +193,8 @@ class SteerlingGenerator:
         model_data = {k: v for k, v in raw_config.items() if k in model_fields}
         model_config = CausalDiffusionConfig.model_validate(model_data)
 
-        tokenizer = SteerlingTokenizer()
+        instruct = raw_config.get("instruct", False)
+        tokenizer = SteerlingTokenizer(instruct=instruct)
 
         # --- Try AutoModel (HF-native path) ---
         try:
@@ -282,11 +329,13 @@ class SteerlingGenerator:
         """
         gen_length = config.max_new_tokens
         steps = config.steps
-        temperature = config.temperature
         cfg_scale = config.cfg_scale
 
+        # Create a dedicated generator for reproducibility
+        generator: torch.Generator | None = None
         if config.seed is not None:
-            torch.manual_seed(config.seed)
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(config.seed)
 
         block_length = self.diff_block_size
         mask_id = self.mask_token_id
@@ -319,7 +368,16 @@ class SteerlingGenerator:
         # Stop tokens
         stop_tokens: list[int] = list(config.stop_tokens or [])
 
+        # Banned token IDs on device
+        banned_ids = self._banned_ids.to(self.device)
+
+        # Track if generation should stop (EOT propagation)
+        generation_done = False
+
         for block_idx in range(num_blocks):
+            if generation_done:
+                break
+
             block_start = prompt_len + block_idx * block_length
             block_end = prompt_len + (block_idx + 1) * block_length
 
@@ -340,44 +398,80 @@ class SteerlingGenerator:
                 else:
                     logits = self._forward(x)
 
-                # Sample candidates
-                logits_with_noise = _add_gumbel_noise(logits, temperature=temperature)
-                x0 = torch.argmax(logits_with_noise, dim=-1)
-
-                # Confidence = softmax probability of chosen token
-                p = F.softmax(logits.float(), dim=-1)
-                x0_p = torch.gather(p, dim=-1, index=x0.unsqueeze(-1)).squeeze(-1)
-
-                # Only consider positions within current block
-                x0_p[:, :block_start] = -np.inf
-                x0_p[:, block_end:] = -np.inf
-
-                x0 = torch.where(mask_index, x0, x)
-                confidence = torch.where(mask_index, x0_p, -np.inf)
-
-                # Unmask top-k most confident positions
-                transfer_index = torch.zeros_like(x0, dtype=torch.bool)
+                # Work only on masked positions within the current block
                 for j in range(bsz):
-                    k = int(num_transfer[j, step].item())
-                    if k > 0:
-                        _, select_index = torch.topk(confidence[j], k=k)
-                        transfer_index[j, select_index] = True
+                    masked_positions = (x[j, block_start:block_end] == mask_id).nonzero(as_tuple=False).squeeze(1)
+                    if masked_positions.numel() == 0:
+                        continue
+                    # Offset to full sequence positions
+                    masked_positions = masked_positions + block_start
 
-                x[transfer_index] = x0[transfer_index]
+                    all_logits = logits[j, masked_positions].float()
+
+                    # Repetition penalty
+                    if config.repetition_penalty != 1.0:
+                        vocab_size = all_logits.shape[-1]
+                        repeated = x[j].unique()
+                        repeated = repeated[(repeated >= 0) & (repeated < vocab_size)]
+                        if repeated.numel() > 0:
+                            values = all_logits[:, repeated]
+                            penalized = torch.where(values > 0, values / config.repetition_penalty, values * config.repetition_penalty)
+                            all_logits[:, repeated] = penalized
+
+                    # Suppress EOS token
+                    all_logits[:, self.eos_token_id] = float("-inf")
+
+                    # Suppress banned tokens (mask, pad)
+                    all_logits.index_fill_(dim=-1, index=banned_ids, value=float("-inf"))
+
+                    # Select most confident position
+                    probs_for_conf = torch.softmax(all_logits, dim=-1)
+                    confidences = probs_for_conf.max(dim=-1).values
+
+                    k = int(num_transfer[j, step].item())
+                    if k == 0:
+                        continue
+                    _, selected_pos_indices = confidences.topk(min(k, masked_positions.numel()))
+
+                    # Sample token at each selected position
+                    for pos_idx in selected_pos_indices:
+                        row_logits = all_logits[pos_idx]
+                        token = _sample_token(row_logits, config, generator)
+                        pos = masked_positions[pos_idx]
+                        x[j, pos] = token
+
+                        # EOT propagation: fill everything after with EOS
+                        token_is_terminal = token == self._eot_id if self._eot_id is not None else False
+                        if token_is_terminal:
+                            x[j, pos + 1:] = self.eos_token_id
+                            generation_done = True
+                            break
+
+                    if generation_done:
+                        break
+
+                if generation_done:
+                    break
 
             # After completing a block, check for stop tokens
-            if stop_tokens:
+            if not generation_done and stop_tokens:
                 generated = x[:, prompt_len:block_end]
                 if any((generated == t).any() for t in stop_tokens):
                     break
 
-        # Extract generated tokens (strip mask tokens, truncate at first stop token)
+        # Extract generated tokens (strip special/terminal tokens)
         gen_ids = x[0, prompt_len:].tolist()
+        terminal_tokens = set(stop_tokens)
+        if self._eot_id is not None:
+            terminal_tokens.add(self._eot_id)
+
         final_tokens = []
         for t in gen_ids:
             if t == mask_id:
                 continue
-            if t in stop_tokens:
+            if t == self.eos_token_id:
+                continue
+            if t in terminal_tokens:
                 break
             final_tokens.append(t)
 

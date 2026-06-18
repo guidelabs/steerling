@@ -1,7 +1,7 @@
 """
 Steerling tokenizer: tiktoken cl100k_base with custom special tokens.
 
-Token layout:
+Token layout (base):
     0 - 100256:  cl100k_base base vocabulary
     100257:      <|endoftext|> (EOS, built into tiktoken)
     100277:      <|pad|>
@@ -9,6 +9,12 @@ Token layout:
     100279:      <|endofchunk|>
     100280:      <|mask|>
     vocab_size:  100281
+
+Token layout (instruct, extends base):
+    100281:      <|start_header_id|>
+    100282:      <|end_header_id|>
+    100283:      <|eot_id|>
+    vocab_size:  100284
 """
 
 from __future__ import annotations
@@ -22,12 +28,14 @@ class SteerlingTokenizer:
     """
     Tokenizer for Steerling models.
 
-    Uses tiktoken cl100k_base with 4 additional special tokens as mentioned above.
+    Uses tiktoken cl100k_base with custom special tokens.
+    Pass ``instruct=True`` to include the 3 additional chat tokens
+    used by the instruct model.
     """
 
     ENCODING_NAME = "cl100k_base"
 
-    def __init__(self):
+    def __init__(self, instruct: bool = False):
         base_enc = tiktoken.get_encoding(self.ENCODING_NAME)
         base_vocab = base_enc.n_vocab  # 100277
 
@@ -36,20 +44,38 @@ class SteerlingTokenizer:
         self._endofchunk_token_id = base_vocab + 2  # 100279
         self._mask_token_id = base_vocab + 3  # 100280
         self._eos_token_id = base_enc._special_tokens["<|endoftext|>"]  # 100257
-        self._vocab_size = base_vocab + 4  # 100281
+        self._instruct = instruct
+
+        special_tokens = {
+            **base_enc._special_tokens,
+            "<|pad|>": self._pad_token_id,
+            "<|bos|>": self._bos_token_id,
+            "<|endofchunk|>": self._endofchunk_token_id,
+            "<|mask|>": self._mask_token_id,
+        }
+
+        if instruct:
+            self._start_header_id = base_vocab + 4  # 100281
+            self._end_header_id = base_vocab + 5  # 100282
+            self._eot_id = base_vocab + 6  # 100283
+            self._vocab_size = base_vocab + 7  # 100284
+            special_tokens.update({
+                "<|start_header_id|>": self._start_header_id,
+                "<|end_header_id|>": self._end_header_id,
+                "<|eot_id|>": self._eot_id,
+            })
+        else:
+            self._start_header_id = None
+            self._end_header_id = None
+            self._eot_id = None
+            self._vocab_size = base_vocab + 4  # 100281
 
         # Create encoding with custom special tokens
         self._tokenizer = tiktoken.Encoding(
             name=f"{self.ENCODING_NAME}_steerling",
             pat_str=base_enc._pat_str,
             mergeable_ranks=base_enc._mergeable_ranks,
-            special_tokens={
-                **base_enc._special_tokens,
-                "<|pad|>": self._pad_token_id,
-                "<|bos|>": self._bos_token_id,
-                "<|endofchunk|>": self._endofchunk_token_id,
-                "<|mask|>": self._mask_token_id,
-            },
+            special_tokens=special_tokens,
         )
 
         self._special_token_ids = {
@@ -59,6 +85,12 @@ class SteerlingTokenizer:
             self._endofchunk_token_id,
             self._mask_token_id,
         }
+        if instruct:
+            self._special_token_ids.update({
+                self._start_header_id,
+                self._end_header_id,
+                self._eot_id,
+            })
 
     def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         """
@@ -123,3 +155,19 @@ class SteerlingTokenizer:
     @property
     def mask_token_id(self) -> int:
         return self._mask_token_id
+
+    @property
+    def instruct(self) -> bool:
+        return self._instruct
+
+    @property
+    def start_header_id(self) -> int | None:
+        return self._start_header_id
+
+    @property
+    def end_header_id(self) -> int | None:
+        return self._end_header_id
+
+    @property
+    def eot_id(self) -> int | None:
+        return self._eot_id

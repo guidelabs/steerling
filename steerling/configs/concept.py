@@ -19,7 +19,7 @@ class ConceptConfig(BaseModel):
     concept_dim: int = Field(4096, description="Concept embedding dimension. Must equal model.n_embd")
     use_attention_known: bool = Field(False, description="Use attention for known concepts (vs linear)")
     use_attention_unknown: bool = Field(False, description="Use attention for unknown concepts")
-    topk_known: int | None = Field(16, description="Top-k sparsity for known concepts")
+    topk_known: int | None = Field(32, description="Top-k sparsity for known concepts")
     topk_known_features: int | None = Field(
         32,
         description="Top-k for known concept features going into LM head. If None, defaults to topk_known.",

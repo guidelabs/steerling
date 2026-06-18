@@ -3,6 +3,7 @@
 
 Usage:
     python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name
+    python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name --hf-dir hf-instruct
     python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id org/model-name --skip-weights
 """
 
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from huggingface_hub import HfApi
 
-HF_DIR = Path(__file__).resolve().parent.parent.parent / "hf"
+DEFAULT_HF_DIR = Path(__file__).resolve().parent.parent.parent / "hf"
 
 CODE_FILES = [
     "config.json",
@@ -32,14 +33,19 @@ WEIGHT_PATTERNS = [
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Upload Steerling to HuggingFace Hub")
-    parser.add_argument("--model-path", type=str, required=True, help="Path to safetensor weights directory")
+    parser.add_argument("--model-path", type=str, required=True, help="Path to safetensor weights (file or directory)")
     parser.add_argument("--repo-id", type=str, required=True, help="HuggingFace repo ID (e.g. org/model-name)")
+    parser.add_argument("--hf-dir", type=Path, default=DEFAULT_HF_DIR, help="Directory with HF code files (default: hf/)")
     parser.add_argument("--skip-weights", action="store_true", help="Skip uploading weight files")
     args = parser.parse_args()
 
-    weights_dir = Path(args.model_path)
-    if not weights_dir.exists():
-        raise FileNotFoundError(f"Weights directory not found: {weights_dir}")
+    weights_path = Path(args.model_path)
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Weights path not found: {weights_path}")
+
+    hf_dir = args.hf_dir.resolve()
+    if not hf_dir.is_dir():
+        raise FileNotFoundError(f"HF directory not found: {hf_dir}")
 
     api = HfApi()
     print(f"Logged in as: {api.whoami()['name']}")
@@ -48,9 +54,9 @@ def main() -> None:
     print(f"Repo: https://huggingface.co/{args.repo_id}")
 
     # Upload code files
-    print("\n--- Uploading code files ---")
+    print(f"\n--- Uploading code files from {hf_dir} ---")
     for filename in CODE_FILES:
-        filepath = HF_DIR / filename
+        filepath = hf_dir / filename
         if not filepath.exists():
             print(f"  SKIP (not found): {filepath}")
             continue
@@ -69,22 +75,29 @@ def main() -> None:
 
     # Upload weights
     print("\n--- Uploading weights ---")
-    weight_files: list[Path] = []
-    for pattern in WEIGHT_PATTERNS:
-        weight_files.extend(weights_dir.glob(pattern))
-    weight_files = sorted(set(weight_files))
+
+    # Support both single file and directory
+    if weights_path.is_file():
+        weight_files = [weights_path]
+    else:
+        weight_files: list[Path] = []
+        for pattern in WEIGHT_PATTERNS:
+            weight_files.extend(weights_path.glob(pattern))
+        weight_files = sorted(set(weight_files))
 
     if not weight_files:
-        print(f"  WARNING: no safetensor files found in {weights_dir}")
+        print(f"  WARNING: no safetensor files found in {weights_path}")
     else:
         for wf in weight_files:
             size_gb = wf.stat().st_size / 1e9
-            print(f"  {wf.name} ({size_gb:.1f} GB)")
+            # Upload single files as model.safetensors
+            repo_name = "model.safetensors" if weights_path.is_file() else wf.name
+            print(f"  {wf.name} -> {repo_name} ({size_gb:.1f} GB)")
             api.upload_file(
                 path_or_fileobj=str(wf),
-                path_in_repo=wf.name,
+                path_in_repo=repo_name,
                 repo_id=args.repo_id,
-                commit_message=f"Upload {wf.name}",
+                commit_message=f"Upload {repo_name}",
             )
 
     print(f"\nDone! https://huggingface.co/{args.repo_id}")
