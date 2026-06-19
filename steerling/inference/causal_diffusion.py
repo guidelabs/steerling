@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 import torch
@@ -46,6 +47,34 @@ class GenerationOutput:
     tokens: torch.Tensor
     prompt_tokens: int
     generated_tokens: int
+
+
+@dataclass
+class GenerationStepInfo:
+    """Information exposed at each generation step for attribution hooks.
+
+    Passed to the step_callback in generate_full. All tensors are
+    references to the forward-pass outputs (no copies), so the callback
+    should extract what it needs before returning.
+
+    Attributes:
+        step: Denoising iteration index.
+        logits: [1, T, V] logits from this forward pass.
+        outputs: Model outputs (InterpretableTrainingOutput when
+            minimal_output=True).
+        committed_positions: [P] sequence indices committed this step.
+        committed_token_ids: [P] token IDs committed this step.
+    """
+
+    step: int
+    logits: torch.Tensor
+    outputs: object
+    committed_positions: torch.Tensor
+    committed_token_ids: torch.Tensor
+
+
+# Step callback type: called at each token commit during generation.
+StepCallback = Callable[[GenerationStepInfo], None]
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +340,7 @@ class SteerlingGenerator:
         self,
         prompt: str | torch.Tensor,
         config: GenerationConfig,
+        step_callback: StepCallback | None = None,
     ) -> GenerationOutput:
         """
         Generate text via block-by-block confidence-based unmasking.
@@ -323,6 +353,9 @@ class SteerlingGenerator:
         Args:
             prompt: Input text string or token tensor of shape (B, L).
             config: Generation configuration.
+            step_callback: Optional callback invoked each time tokens are committed.
+                Called with (positions, token_ids, InterpretableOutput).
+                Used by ConceptAttributor for faithful attribution.
 
         Returns:
             GenerationOutput with text, tokens, and counts.
@@ -339,6 +372,9 @@ class SteerlingGenerator:
 
         block_length = self.diff_block_size
         mask_id = self.mask_token_id
+
+        # Use full forward when step_callback needs InterpretableOutput
+        need_outputs = step_callback is not None and self.is_interpretable
 
         # Encode prompt
         if isinstance(prompt, str):
@@ -373,6 +409,7 @@ class SteerlingGenerator:
 
         # Track if generation should stop (EOT propagation)
         generation_done = False
+        global_step = 0
 
         for block_idx in range(num_blocks):
             if generation_done:
@@ -387,7 +424,7 @@ class SteerlingGenerator:
             for step in range(steps_per_block):
                 mask_index = x == mask_id
 
-                # Forward pass with optional CFG
+                # Forward pass
                 if cfg_scale > 0.0:
                     un_x = x.clone()
                     un_x[prompt_index] = mask_id
@@ -395,8 +432,12 @@ class SteerlingGenerator:
                     logits = self._forward(x_)
                     cond_logits, uncond_logits = torch.chunk(logits, 2, dim=0)
                     logits = uncond_logits + (cfg_scale + 1) * (cond_logits - uncond_logits)
+                    interp_outputs = None
+                elif need_outputs:
+                    logits, interp_outputs = self._forward(x, return_outputs=True)
                 else:
                     logits = self._forward(x)
+                    interp_outputs = None
 
                 # Work only on masked positions within the current block
                 for j in range(bsz):
@@ -434,11 +475,15 @@ class SteerlingGenerator:
                     _, selected_pos_indices = confidences.topk(min(k, masked_positions.numel()))
 
                     # Sample token at each selected position
+                    committed_positions: list[int] = []
+                    committed_token_ids: list[int] = []
                     for pos_idx in selected_pos_indices:
                         row_logits = all_logits[pos_idx]
                         token = _sample_token(row_logits, config, generator)
                         pos = masked_positions[pos_idx]
                         x[j, pos] = token
+                        committed_positions.append(int(pos))
+                        committed_token_ids.append(int(token))
 
                         # EOT propagation: fill everything after with EOS
                         token_is_terminal = token == self._eot_id if self._eot_id is not None else False
@@ -447,8 +492,20 @@ class SteerlingGenerator:
                             generation_done = True
                             break
 
+                    # Fire callback with committed positions
+                    if step_callback is not None and interp_outputs is not None and committed_positions:
+                        step_callback(GenerationStepInfo(
+                            step=global_step,
+                            logits=logits,
+                            outputs=interp_outputs,
+                            committed_positions=torch.tensor(committed_positions, device=self.device),
+                            committed_token_ids=torch.tensor(committed_token_ids, dtype=torch.long, device=self.device),
+                        ))
+
                     if generation_done:
                         break
+
+                global_step += 1
 
                 if generation_done:
                     break
@@ -562,13 +619,17 @@ class SteerlingGenerator:
     # Internal
     # ------------------------------------------------------------------
 
-    def _forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """Forward pass returning logits, handling both HF and native models."""
+    def _forward(self, input_ids: torch.Tensor, return_outputs: bool = False):
+        """Forward pass. Returns logits, or (logits, InterpretableOutput) when return_outputs=True."""
         if self.is_interpretable:
             output = self.model(input_ids, minimal_output=True)
         else:
             output = self.model(input_ids)
 
         if isinstance(output, tuple):
+            if return_outputs:
+                return output[0], output[1]
             return output[0]
+        if return_outputs:
+            return output, None
         return output

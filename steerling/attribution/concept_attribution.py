@@ -1,21 +1,24 @@
 """
-Concept attribution for Steerling models.
+Faithful concept attribution captured during generation.
 
-Provides per-position and per-chunk concept attribution using sparse top-k indices
-from the ConceptHead forward pass.
+Instead of running a post-hoc forward pass over the fully-unmasked sequence,
+this module captures concept attributions at commit time — the moment each
+token is decided — using the actual partially-masked context the model
+operated in.
 
 Usage:
     from steerling import SteerlingGenerator, GenerationConfig
-    from steerling.attribution import ConceptAttributor
+    from steerling.attribution import FaithfulConceptAttributor
 
     generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b", device="cuda")
-    attributor = ConceptAttributor(generator)
+    attributor = FaithfulConceptAttributor(generator)
 
-    entries, eps_pct = attributor.attribute(prompt="AI technology will")
+    gen_output, attribution = attributor.attribute("AI technology will")
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -24,6 +27,206 @@ import torch
 from torch import Tensor
 
 from steerling import GenerationConfig, SteerlingGenerator
+from steerling.inference.causal_diffusion import GenerationOutput, GenerationStepInfo
+
+
+# ---------------------------------------------------------------------------
+# Commit event
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CommitEvent:
+    """
+    Concept state captured at the moment tokens are committed.
+
+    All tensors are 1-D in the position dimension (no batch dim)
+    since generation is single-prompt (B=1).
+
+    Attributes:
+        step: Denoising iteration index.
+        positions: [P] sequence positions committed this step.
+        token_ids: [P] chosen token IDs.
+        target_logits: [P] model's logit for the chosen token.
+        known_indices: [P, K_known] top-k known concept indices.
+        known_logits: [P, K_known] pre-sigmoid logits for known concepts.
+        unk_indices: [P, K_unk] top-k unknown concept indices, or None.
+        unk_logits: [P, K_unk] pre-sigmoid logits for unknown concepts, or None.
+    """
+
+    step: int
+    positions: Tensor
+    token_ids: Tensor
+    target_logits: Tensor
+    known_indices: Tensor
+    known_logits: Tensor
+    unk_indices: Tensor | None
+    unk_logits: Tensor | None
+
+
+# ---------------------------------------------------------------------------
+# Unknown top-k helper
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def _compute_unknown_topk(
+    unknown_head,
+    hidden: Tensor,
+    k: int = 64,
+) -> tuple[Tensor | None, Tensor | None]:
+    """
+    Compute unknown concept top-k for a slice of positions.
+
+    With ``minimal_output=True``, unknown top-k is not included in
+    the model outputs. This helper computes it from hidden states
+    for only the committed positions (typically tokens_per_step),
+    keeping memory O(P * k).
+
+    Args:
+        unknown_head: The unknown ConceptHead, or None.
+        hidden: [1, P, D] hidden states for positions of interest.
+        k: Number of top concepts to return per position.
+
+    Returns:
+        (indices, logits) each [1, P, k], or (None, None).
+    """
+    if unknown_head is None or k <= 0:
+        return None, None
+
+    _, indices, logits = unknown_head.linear_features_topk_factorized(
+        hidden, k=k, block_size=unknown_head.block_size,
+    )
+
+    return indices, logits  # [1, P, k], [1, P, k]
+
+
+# ---------------------------------------------------------------------------
+# Attribution accumulator
+# ---------------------------------------------------------------------------
+
+
+class AttributionAccumulator:
+    """
+    Accumulates concept attribution as tokens are committed during generation.
+
+    Pre-allocates [1, T, K] buffers. Each commit() computes per-concept
+    contributions (w_i * (v_i^T @ W_{y_t})) and scatter-writes them
+    into the buffers.
+
+    All computation in float32 for numerical precision.
+
+    Args:
+        seq_len: Total sequence length (prompt + generation).
+        k_known: Number of known top-k concepts per position.
+        k_unk: Number of unknown top-k concepts per position.
+        device: Torch device.
+        lm_head_weight: [V, D] LM head weight matrix.
+        known_head: Known ConceptHead.
+        unknown_head: Unknown ConceptHead, or None.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        k_known: int,
+        k_unk: int,
+        device: torch.device,
+        lm_head_weight: Tensor,
+        known_head,
+        unknown_head=None,
+    ) -> None:
+        self.seq_len = seq_len
+        self.k_known = k_known
+        self.k_unk = k_unk
+        self.device = device
+        self.lm_head_weight = lm_head_weight
+        self.known_head = known_head
+        self.unknown_head = unknown_head
+
+        # Pre-allocate output buffers
+        self.known_indices = torch.zeros(1, seq_len, k_known, dtype=torch.long, device=device)
+        self.known_contributions = torch.zeros(1, seq_len, k_known, device=device)
+
+        self.unk_indices = torch.zeros(1, seq_len, k_unk, dtype=torch.long, device=device)
+        self.unk_contributions = torch.zeros(1, seq_len, k_unk, device=device)
+
+        self.residual_contribution = torch.zeros(1, seq_len, device=device)
+
+    @torch.no_grad()
+    def commit(self, event: CommitEvent) -> None:
+        """
+        Record attribution for newly committed positions.
+
+        Computes C(c_i, y_t) = w_i * (v_i^T @ W_{y_t}) using the
+        concept state from the current forward pass.
+
+        Args:
+            event: CommitEvent with positions, tokens, and concept
+                head outputs from this denoising step.
+        """
+        pos = event.positions  # [P]
+        P = pos.shape[0]
+        if P == 0:
+            return
+
+        # All computation in float32
+        target_logits_f = event.target_logits.float()
+
+        # LM head weights for committed tokens: [P, D]
+        W_yt = self.lm_head_weight[event.token_ids].float()
+
+        # Known contributions
+        k_emb = self.known_head._get_embedding(event.known_indices).float()  # [P, K, D]
+        k_dots = torch.einsum("pkd,pd->pk", k_emb, W_yt)  # [P, K]
+        k_w = torch.sigmoid(event.known_logits.float())  # [P, K]
+        k_contrib = k_w * k_dots  # [P, K]
+
+        # Unknown contributions
+        if self.unknown_head is not None and event.unk_indices is not None and event.unk_logits is not None:
+            u_emb = self.unknown_head._get_embedding(event.unk_indices).float()  # [P, K_unk, D]
+            u_dots = torch.einsum("pkd,pd->pk", u_emb, W_yt)  # [P, K_unk]
+            u_w = torch.sigmoid(event.unk_logits.float())  # [P, K_unk]
+            u_contrib = u_w * u_dots  # [P, K_unk]
+        else:
+            u_w = torch.zeros(P, self.k_unk, device=self.device)
+            u_contrib = torch.zeros(P, self.k_unk, device=self.device)
+
+        # Residual (exact by linearity)
+        residual = target_logits_f - k_contrib.sum(-1) - u_contrib.sum(-1)  # [P]
+
+        # Scatter-write into pre-allocated buffers
+        self.known_indices[0, pos] = event.known_indices
+        self.known_contributions[0, pos] = k_contrib
+
+        if event.unk_indices is not None:
+            self.unk_indices[0, pos] = event.unk_indices
+        self.unk_contributions[0, pos] = u_contrib
+
+        self.residual_contribution[0, pos] = residual
+
+    def result(self) -> AttributionResult:
+        """Build final attribution from accumulated commits."""
+        return AttributionResult(
+            known_indices=self.known_indices,
+            known_contributions=self.known_contributions,
+            unk_indices=self.unk_indices,
+            unk_contributions=self.unk_contributions,
+            epsilon=self.residual_contribution,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Attribution result and entries
+# ---------------------------------------------------------------------------
+
+
+class AttributionResult(TypedDict):
+    known_indices: Tensor  # (B, T, K_known)
+    known_contributions: Tensor  # (B, T, K_known)
+    unk_indices: Tensor  # (B, T, K_unk)
+    unk_contributions: Tensor  # (B, T, K_unk)
+    epsilon: Tensor  # (B, T)
 
 
 class AttributionEntry(TypedDict):
@@ -32,140 +235,92 @@ class AttributionEntry(TypedDict):
     contribution: float
 
 
-class AttributionResult(TypedDict):
-    known_indices: Tensor  # (B, T, K_known)
-    known_contributions: Tensor  # (B, T, K_known)
-    disc_indices: Tensor  # (B, T, K_disc)
-    disc_contributions: Tensor  # (B, T, K_disc)
-    epsilon: Tensor  # (B, T)
+# ---------------------------------------------------------------------------
+# Concept labels
+# ---------------------------------------------------------------------------
 
 
 class ConceptLabels:
-    """Maps concept IDs to human-readable labels from a CSV file."""
+    """Maps concept IDs to human-readable labels.
+
+    Supports parquet format (concept_labels.parquet with known + unknown)
+    and legacy CSV format.
+    """
 
     def __init__(self, concepts_path: Path | str | None = None):
         if concepts_path is not None:
             p = Path(concepts_path)
             if p.exists():
-                self._df = pd.read_csv(p)
+                if p.suffix == ".parquet":
+                    self._df = pd.read_parquet(p)
+                else:
+                    self._df = pd.read_csv(p)
+                    # Legacy CSV uses concept_idx; normalize to concept_id
+                    if "concept_idx" in self._df.columns and "concept_id" not in self._df.columns:
+                        self._df = self._df.rename(columns={"concept_idx": "concept_id"})
                 print(f"Loaded {len(self._df)} concept labels from {p}")
             else:
                 print(f"Concept file not found at {p} — using fallback labels")
-                self._df = pd.DataFrame(columns=pd.Index(["concept_idx", "concept_name"]))
+                self._df = pd.DataFrame(columns=pd.Index(["concept_id", "head", "concept_name"]))
         else:
-            self._df = pd.DataFrame(columns=pd.Index(["concept_idx", "concept_name"]))
+            self._df = pd.DataFrame(columns=pd.Index(["concept_id", "head", "concept_name"]))
+
+        # Build lookup dicts for fast access
+        self._labels: dict[int, str] = {}
+        self._heads: dict[int, str] = {}
+        for _, row in self._df.iterrows():
+            cid = int(row["concept_id"])
+            self._labels[cid] = str(row["concept_name"])
+            if "head" in row.index:
+                self._heads[cid] = str(row["head"])
 
     def label(self, concept_id: int, concept_type: str = "known") -> str:
-        if concept_type == "discovered":
-            return f"Discovered #{concept_id}"
-        row = self._df[self._df["concept_idx"] == concept_id]
-        if len(row) == 0:
-            return f"Known #{concept_id}"
-        return str(row.iloc[0]["concept_name"])
+        name = self._labels.get(concept_id)
+        if name is None:
+            if concept_type == "discovered":
+                return f"Discovered: #{concept_id}"
+            return f"Known: #{concept_id}"
+        head = self._heads.get(concept_id, concept_type)
+        prefix = "Discovered" if head == "unknown" else "Known"
+        return f"{prefix}: {name}"
 
 
-@torch.no_grad()
-def compute_concept_attribution(
-    outputs,
-    logits: Tensor,
-    backbone,
-) -> AttributionResult:
-    """
-    Compute per-position concept contributions using sparse top-k indices.
-
-    For each position, decomposes the predicted token logit into:
-        - known concept contributions
-        - discovered (unknown) concept contributions
-        - epsilon residual
-
-    Args:
-        outputs: Backbone output object with known_topk_indices, known_topk_logits,
-                 unknown_topk_indices, unknown_topk_logits attributes.
-        logits: (B, T, V) token logits from the backbone.
-        backbone: The backbone model with known_head, unknown_head, and lm_head.
-
-    Returns:
-        AttributionResult dict with indices, contributions, and epsilon tensors.
-    """
-    pred_ids = logits.argmax(dim=-1)  # (B, T)
-    pred_logits = torch.gather(logits, -1, pred_ids.unsqueeze(-1)).squeeze(-1)  # (B, T)
-    W_y = backbone.transformer.lm_head.weight[pred_ids]  # (B, T, D)
-
-    def _head_contrib(
-        head,
-        topk_idx: Tensor | None,
-        topk_logits: Tensor | None,
-    ) -> tuple[Tensor, Tensor] | None:
-        """Compute contribution from a single concept head's sparse top-k."""
-        if topk_idx is None:
-            return None
-        emb = head._get_embedding(topk_idx)  # (B, T, k, D)
-        dots = torch.einsum("btkd,btd->btk", emb, W_y)  # (B, T, k)
-        assert topk_logits is not None  # narrowing for type
-        w = torch.sigmoid(topk_logits.float())  # (B, T, k)
-        return topk_idx, w * dots
-
-    known = _head_contrib(
-        backbone.known_head,
-        topk_idx=outputs.known_topk_indices,
-        topk_logits=outputs.known_topk_logits,
-    )
-
-    disc = None
-    if getattr(backbone, "unknown_head", None) is not None:
-        disc = _head_contrib(
-            backbone.unknown_head,
-            topk_idx=outputs.unknown_topk_indices,
-            topk_logits=outputs.unknown_topk_logits,
-        )
-
-    bsz, tlen = pred_ids.shape
-    device = pred_ids.device
-
-    def _zero(k: int = 0) -> tuple[Tensor, Tensor]:
-        return (
-            torch.zeros(bsz, tlen, k, dtype=torch.long, device=device),
-            torch.zeros(bsz, tlen, k, device=device),
-        )
-
-    k_idx, k_c = known if known is not None else _zero()
-    d_idx, d_c = disc if disc is not None else _zero()
-
-    eps = pred_logits - k_c.sum(-1) - d_c.sum(-1)
-
-    return AttributionResult(
-        known_indices=k_idx,
-        known_contributions=k_c,
-        disc_indices=d_idx,
-        disc_contributions=d_c,
-        epsilon=eps,
-    )
+# ---------------------------------------------------------------------------
+# Chunk-level attribution
+# ---------------------------------------------------------------------------
 
 
 def find_chunks(token_ids: Tensor, tokenizer) -> list[tuple[int, int]]:
     """
-    Split token IDs at <|endofchunk|> boundaries.
+    Split token IDs at chunk boundaries (<|endofchunk|> and <|eot_id|>).
 
     Args:
         token_ids: (L,) or (1, L) token tensor.
-        tokenizer: Tokenizer with optional endofchunk_token_id attribute.
+        tokenizer: Tokenizer with optional endofchunk_token_id and eot_id attributes.
 
     Returns:
         List of (start, end) index pairs, one per chunk.
     """
     ids = token_ids.squeeze()
     eoc_id = getattr(tokenizer, "endofchunk_token_id", None)
+    eot_id = getattr(tokenizer, "eot_id", None)
 
-    if eoc_id is None:
+    boundary_ids = set()
+    if eoc_id is not None:
+        boundary_ids.add(eoc_id)
+    if eot_id is not None:
+        boundary_ids.add(eot_id)
+
+    if not boundary_ids:
         return [(0, int(ids.shape[0]))]
 
-    positions = (ids == eoc_id).nonzero(as_tuple=True)[0].tolist()
     chunks: list[tuple[int, int]] = []
     prev = 0
-    for p in positions:
-        if p > prev:
-            chunks.append((prev, p))
-        prev = p + 1
+    for p in range(len(ids)):
+        if int(ids[p]) in boundary_ids:
+            if p > prev:
+                chunks.append((prev, p))
+            prev = p + 1
     if prev < len(ids):
         chunks.append((prev, len(ids)))
     return chunks
@@ -177,20 +332,22 @@ def chunk_attribution(
     end: int,
     batch: int = 0,
     concept_labels: ConceptLabels | None = None,
+    num_known_concepts: int = 0,
 ) -> tuple[list[AttributionEntry], float]:
     """
     Compute concept attribution over a chunk of tokens [start, end).
 
     Per position, each concept's contribution is normalized by the total absolute
-    logit mass at that position (known + discovered + epsilon). This removes
+    logit mass at that position (known + unknown + epsilon). This removes
     scale differences across positions so every token votes equally to the chunk.
 
     Args:
-        attr: AttributionResult from compute_concept_attribution.
+        attr: AttributionResult from the accumulator.
         start: Start token index (inclusive).
         end: End token index (exclusive).
         batch: Batch index to use (default 0).
         concept_labels: Optional ConceptLabels for human-readable names.
+        num_known_concepts: Offset for unknown concept IDs to avoid collision.
 
     Returns:
         entries: List of AttributionEntry dicts sorted by abs contribution.
@@ -200,14 +357,14 @@ def chunk_attribution(
 
     k_idx = attr["known_indices"][batch, start:end]  # (T, K_known)
     k_c = attr["known_contributions"][batch, start:end]  # (T, K_known)
-    d_idx = attr["disc_indices"][batch, start:end]  # (T, K_disc)
-    d_c = attr["disc_contributions"][batch, start:end]  # (T, K_disc)
+    u_idx = attr["unk_indices"][batch, start:end]  # (T, K_unk)
+    u_c = attr["unk_contributions"][batch, start:end]  # (T, K_unk)
     eps = attr["epsilon"][batch, start:end]  # (T,)
 
-    pos_total = (k_c.abs().sum(-1) + d_c.abs().sum(-1) + eps.abs()).clamp(min=1e-8)  # (T,)
+    pos_total = (k_c.abs().sum(-1) + u_c.abs().sum(-1) + eps.abs()).clamp(min=1e-8)  # (T,)
 
     k_c_norm = k_c / pos_total.unsqueeze(-1)  # (T, K_known)
-    d_c_norm = d_c / pos_total.unsqueeze(-1)  # (T, K_disc)
+    u_c_norm = u_c / pos_total.unsqueeze(-1)  # (T, K_unk)
 
     def aggregate(idx: Tensor, contrib_norm: Tensor) -> tuple[Tensor, Tensor]:
         flat_idx = idx.reshape(-1)
@@ -218,7 +375,7 @@ def chunk_attribution(
         return unique_ids, mass
 
     k_ids, k_mass = aggregate(k_idx, k_c_norm)
-    d_ids, d_mass = aggregate(d_idx, d_c_norm)
+    u_ids, u_mass = aggregate(u_idx, u_c_norm)
 
     T = end - start
     entries: list[AttributionEntry] = []
@@ -231,10 +388,10 @@ def chunk_attribution(
                 contribution=float(mass) / T,
             )
         )
-    for cid, mass in zip(d_ids.tolist(), d_mass.tolist(), strict=False):
+    for cid, mass in zip(u_ids.tolist(), u_mass.tolist(), strict=False):
         entries.append(
             AttributionEntry(
-                label=labels.label(int(cid), "discovered"),
+                label=labels.label(int(cid + num_known_concepts), "discovered"),
                 type="discovered",
                 contribution=float(mass) / T,
             )
@@ -246,31 +403,45 @@ def chunk_attribution(
     return entries, eps_pct
 
 
-class ConceptAttributor:
+# ---------------------------------------------------------------------------
+# High-level attributor
+# ---------------------------------------------------------------------------
+
+
+class FaithfulConceptAttributor:
     """
-    High-level interface for concept attribution on Steerling models.
+    Faithful concept attribution captured during generation.
+
+    Each token's attribution comes from the forward pass where it was
+    committed — the actual decision context with partial masking — rather
+    than a post-hoc pass over the fully unmasked sequence.
 
     Args:
         generator: A loaded SteerlingGenerator instance.
-        concepts_path: Optional path to known_concepts.csv for label lookup.
-
-    Example:
-        attributor = ConceptAttributor(generator, concepts_path="assets/concepts/known_concepts.csv")
-        results = attributor.attribute("AI technology will")
-        for chunk_entries, eps_pct in results:
-            for entry in chunk_entries[:5]:
-                print(entry)
+        concepts_path: Optional path to concept_labels.parquet for label lookup.
+        unknown_topk: Number of unknown top-k concepts to compute
+            per committed position.
     """
 
     def __init__(
         self,
         generator: SteerlingGenerator,
         concepts_path: Path | str | None = None,
-    ):
+        unknown_topk: int = 64,
+    ) -> None:
         self.generator = generator
-        self.backbone: Any = generator.model.model if hasattr(generator.model, "model") else generator.model
+        # Resolve backbone — may be wrapped
+        if hasattr(generator.model, "model"):
+            self.backbone: Any = generator.model.model
+        else:
+            self.backbone = generator.model
         self.device = generator.device
         self.labels = ConceptLabels(concepts_path)
+        self.unknown_topk = unknown_topk
+        self._num_known_concepts = getattr(
+            getattr(self.backbone, "known_head", None), "n_concepts", 0
+        )
+        self.last_attribution: AttributionResult | None = None
 
     @torch.no_grad()
     def attribute(
@@ -278,54 +449,100 @@ class ConceptAttributor:
         prompt: str,
         config: GenerationConfig | None = None,
         batch: int = 0,
-    ) -> list[tuple[list[AttributionEntry], float]]:
+    ) -> tuple[GenerationOutput, list[tuple[list[AttributionEntry], float]]]:
         """
-        Generate text from prompt and compute chunk-level concept attribution.
+        Generate text and capture faithful concept attribution.
 
         Args:
             prompt: Input text prompt.
-            config: GenerationConfig (defaults to max_new_tokens=128).
+            config: Generation configuration. If None, uses defaults.
             batch: Batch index (default 0).
 
         Returns:
-            List of (entries, eps_pct) tuples, one per chunk.
+            (gen_output, chunks) where chunks is a list of
+            (entries, eps_pct) per chunk.
         """
         if config is None:
-            config = GenerationConfig(max_new_tokens=128, steps=128, temperature=0.4)
+            config = GenerationConfig(max_new_tokens=128, steps=128)
 
-        gen_output = self.generator.generate_full(prompt, config)
-        tokens = gen_output.tokens.unsqueeze(0)  # (1, L)
+        if not self.generator.is_interpretable:
+            raise RuntimeError("Attribution requires an interpretable model.")
 
-        logits, outputs = self.backbone(tokens, minimal_output=True)
+        # Determine k from model
+        k_known = getattr(self.backbone.known_head, "topk", 32)
+        unknown_head = getattr(self.backbone, "unknown_head", None)
+        k_unk = self.unknown_topk
 
-        attr = compute_concept_attribution(outputs, logits, self.backbone)
+        # Estimate sequence length for pre-allocation
+        prompt_ids = self.generator.tokenizer.encode(prompt, add_special_tokens=False)
+        seq_len = len(prompt_ids) + config.max_new_tokens
+
+        # Create accumulator
+        lm_head_weight = self.backbone.transformer.lm_head.weight
+        accumulator = AttributionAccumulator(
+            seq_len=seq_len,
+            k_known=k_known,
+            k_unk=k_unk,
+            device=self.device,
+            lm_head_weight=lm_head_weight,
+            known_head=self.backbone.known_head,
+            unknown_head=unknown_head,
+        )
+
+        # Step callback — fires at each commit, computes attribution inline
+        known_head_ref = self.backbone.known_head
+        unknown_head_ref = unknown_head
+        unk_topk = self.unknown_topk
+
+        def on_commit(info: GenerationStepInfo) -> None:
+            pos = info.committed_positions  # [P]
+            tids = info.committed_token_ids  # [P]
+
+            # Target logits from this forward pass
+            target_lgt = info.logits[0, pos].gather(
+                -1, tids.unsqueeze(-1)
+            ).squeeze(-1)
+
+            # Known: extract top-k from outputs (sparse path)
+            k_idx = info.outputs.known_topk_indices[0, pos]  # [P, K]
+            k_lgt = info.outputs.known_topk_logits[0, pos]  # [P, K]
+
+            # Unknown: compute from hidden for committed positions only
+            hidden_p = info.outputs.hidden[:, pos, :]  # [1, P, D]
+            u_idx, u_lgt = _compute_unknown_topk(
+                unknown_head_ref, hidden_p, k=unk_topk,
+            )
+
+            accumulator.commit(
+                CommitEvent(
+                    step=info.step,
+                    positions=pos,
+                    token_ids=tids,
+                    target_logits=target_lgt,
+                    known_indices=k_idx,
+                    known_logits=k_lgt,
+                    unk_indices=u_idx[0] if u_idx is not None else None,
+                    unk_logits=u_lgt[0] if u_lgt is not None else None,
+                )
+            )
+
+        # Generate with callback
+        gen_output = self.generator.generate_full(prompt, config, step_callback=on_commit)
+
+        # Build chunk-level results
+        attr = accumulator.result()
+        self.last_attribution = attr  # expose for custom chunk ranges
+
+        tokens = gen_output.tokens.unsqueeze(0)
         chunks = find_chunks(tokens, self.generator.tokenizer)
 
         results = []
         for start, end in chunks:
-            entries, eps_pct = chunk_attribution(attr, start, end, batch=batch, concept_labels=self.labels)
+            entries, eps_pct = chunk_attribution(
+                attr, start, end, batch=batch,
+                concept_labels=self.labels,
+                num_known_concepts=self._num_known_concepts,
+            )
             results.append((entries, eps_pct))
 
-        return results
-
-    def attribute_tokens(
-        self,
-        tokens: Tensor,
-        batch: int = 0,
-    ) -> tuple[AttributionResult, list[tuple[int, int]]]:
-        """
-        Run attribution on a pre-tokenized tensor. Returns raw attribution
-        result and chunk boundaries for custom downstream processing.
-
-        Args:
-            tokens: (1, L) token tensor already on the correct device.
-            batch: Batch index (default 0).
-
-        Returns:
-            attr: Raw AttributionResult dict.
-            chunks: List of (start, end) chunk boundaries.
-        """
-        logits, outputs = self.backbone(tokens, minimal_output=True)
-        attr = compute_concept_attribution(outputs, logits, self.backbone)
-        chunks = find_chunks(tokens, self.generator.tokenizer)
-        return attr, chunks
+        return gen_output, results
