@@ -353,6 +353,24 @@ class SteerlingGenerator:
         return self.generate_full(prompt, config, steering=steering)
 
     @torch.inference_mode()
+    def concept_top_tokens(self, concept_id: int, k: int = 15) -> list[tuple[str, float]]:
+        """
+        The vocabulary tokens a concept most promotes, with alignment scores.
+
+        Projects the (unit-normalized) concept embedding onto the LM head. This
+        shows what the concept actually does in the loaded weights, which is the
+        reliable way to confirm an ID matches the concept you intend to steer.
+        """
+        if not self.is_interpretable:
+            raise ValueError("Concept inspection requires an interpretable model.")
+        cid = torch.tensor([concept_id], device=self.device)
+        emb = self.model.known_head._get_embedding(cid).float()[0]
+        emb = emb / (emb.norm() + 1e-12)
+        alignment = self.model.transformer.lm_head.weight.float() @ emb
+        values, indices = alignment.topk(k)
+        return [(self.tokenizer.decode([int(i)]), float(v)) for i, v in zip(indices, values, strict=True)]
+
+    @torch.inference_mode()
     def generate_full(
         self,
         prompt: str | torch.Tensor,

@@ -6,6 +6,7 @@ __version__ = "0.1.0"
 
 from steerling.configs import CausalDiffusionConfig, ConceptConfig, GenerationConfig, SteeringConfig
 from steerling.inference import SteerlingGenerator
+from steerling.concepts import ConceptCatalog
 
 __all__ = [
     "CausalDiffusionConfig",
@@ -13,4 +14,5 @@ __all__ = [
     "GenerationConfig",
     "SteeringConfig",
     "SteerlingGenerator",
+    "ConceptCatalog",
 ]
