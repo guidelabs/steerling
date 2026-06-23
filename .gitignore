@@ -229,3 +229,6 @@ jobs/
 # Backup files from API migration
 *_old.py
 *_old.ipynb
+*.bak
+*.new
+tests/test_sampling_match.py
