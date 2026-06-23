@@ -23,6 +23,7 @@ import steerling.models.layers.causal_diffusion_layers as layers
 from steerling.configs.causal_diffusion import CausalDiffusionConfig
 from steerling.configs.concept import ConceptConfig
 from steerling.configs.generation import GenerationConfig
+from steerling.configs.steering import SteeringConfig
 from steerling.data.tokenizer import SteerlingTokenizer
 from steerling.inference.checkpoint_utils import load_config, load_state_dict
 from steerling.models.causal_diffusion import CausalDiffusionLM
@@ -307,10 +308,29 @@ class SteerlingGenerator:
         return self.generate_full(prompt, config).text
 
     @torch.inference_mode()
+    def generate_steered(
+        self,
+        prompt: str | torch.Tensor,
+        config: GenerationConfig,
+        steering: SteeringConfig,
+    ) -> GenerationOutput:
+        """
+        Generate text while steering concept activations.
+
+        Adds a concept direction to the residual stream at layers
+        >= ``steering.inject_layer`` and/or suppresses positively aligned
+        vocab via ``steering.relu_logit_mask``. Requires an interpretable model.
+        """
+        if not self.is_interpretable:
+            raise ValueError("Steering requires an interpretable model.")
+        return self.generate_full(prompt, config, steering=steering)
+
+    @torch.inference_mode()
     def generate_full(
         self,
         prompt: str | torch.Tensor,
         config: GenerationConfig,
+        steering: SteeringConfig | None = None,
     ) -> GenerationOutput:
         """
         Generate text via block-by-block confidence-based unmasking.
@@ -339,6 +359,22 @@ class SteerlingGenerator:
 
         block_length = self.diff_block_size
         mask_id = self.mask_token_id
+
+        # Steering: precompute injection direction/alpha and/or vocab suppression
+        steer_direction: torch.Tensor | None = None
+        steer_base_alpha: float = 1.0
+        steer_inject_layer: int | None = None
+        steer_schedule: str = "fixed"
+        steer_cutoff: int = 32
+        relu_suppression: torch.Tensor | None = None
+        if steering is not None:
+            if steering.has_injection:
+                steer_direction, steer_base_alpha, steer_inject_layer = self._prepare_steering(steering)
+                steer_schedule = steering.inject_alpha_schedule
+                steer_cutoff = steering.cutoff_tokens
+            if steering.has_logit_mask:
+                assert steering.relu_logit_mask is not None
+                relu_suppression = self._build_relu_mask(steering.relu_logit_mask)
 
         # Encode prompt
         if isinstance(prompt, str):
@@ -388,15 +424,27 @@ class SteerlingGenerator:
                 mask_index = x == mask_id
 
                 # Forward pass with optional CFG
+                # Resolve injection strength under the alpha schedule, then inject
+                # only at currently-masked positions (mask-aligned injection).
+                current_alpha = 0.0
+                if steer_direction is not None:
+                    masked_remaining = int((x == mask_id).sum().item())
+                    current_alpha = self._resolve_alpha(
+                        steer_schedule, steer_base_alpha, masked_remaining, gen_length, steer_cutoff
+                    )
+                direction = steer_direction if current_alpha != 0.0 else None
+
                 if cfg_scale > 0.0:
                     un_x = x.clone()
                     un_x[prompt_index] = mask_id
                     x_ = torch.cat([x, un_x], dim=0)
-                    logits = self._forward(x_)
+                    inj = self._position_injection(x_, direction)
+                    logits = self._forward(x_, inj, steer_inject_layer, current_alpha)
                     cond_logits, uncond_logits = torch.chunk(logits, 2, dim=0)
                     logits = uncond_logits + (cfg_scale + 1) * (cond_logits - uncond_logits)
                 else:
-                    logits = self._forward(x)
+                    inj = self._position_injection(x, direction)
+                    logits = self._forward(x, inj, steer_inject_layer, current_alpha)
 
                 # Work only on masked positions within the current block
                 for j in range(bsz):
@@ -407,6 +455,10 @@ class SteerlingGenerator:
                     masked_positions = masked_positions + block_start
 
                     all_logits = logits[j, masked_positions].float()
+
+                    # Concept suppression: subtract strength * relu(concept-vocab alignment)
+                    if relu_suppression is not None:
+                        all_logits = all_logits - relu_suppression
 
                     # Repetition penalty
                     if config.repetition_penalty != 1.0:
@@ -562,13 +614,114 @@ class SteerlingGenerator:
     # Internal
     # ------------------------------------------------------------------
 
-    def _forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def _forward(
+        self,
+        input_ids: torch.Tensor,
+        injection: torch.Tensor | None = None,
+        inject_layer: int | None = None,
+        inject_alpha: float = 1.0,
+    ) -> torch.Tensor:
         """Forward pass returning logits, handling both HF and native models."""
         if self.is_interpretable:
-            output = self.model(input_ids, minimal_output=True)
+            if injection is not None and inject_layer is not None:
+                output = self.model(
+                    input_ids,
+                    minimal_output=True,
+                    position_injection=injection,
+                    steering_inject_layer=inject_layer,
+                    steering_inject_alpha=inject_alpha,
+                )
+            else:
+                output = self.model(input_ids, minimal_output=True)
         else:
             output = self.model(input_ids)
 
         if isinstance(output, tuple):
             return output[0]
         return output
+
+    @staticmethod
+    def _resolve_alpha(
+        schedule: str,
+        base_alpha: float,
+        masked_remaining: int,
+        max_new_tokens: int,
+        cutoff_tokens: int,
+    ) -> float:
+        """
+        Current injection alpha given the schedule and how many tokens are committed.
+
+        committed = max_new_tokens - masked_remaining (counted across the full
+        sequence). 'fixed' holds base_alpha. 'hard_cutoff' applies base_alpha while
+        committed < cutoff_tokens, then drops to zero.
+        """
+        if schedule == "fixed":
+            return base_alpha
+        if schedule == "hard_cutoff":
+            committed = max(max_new_tokens, 1) - masked_remaining
+            return base_alpha if committed < cutoff_tokens else 0.0
+        raise ValueError(f"Unknown inject_alpha_schedule: {schedule!r}")
+
+    def _prepare_steering(self, steering: SteeringConfig) -> tuple[torch.Tensor, float, int]:
+        """
+        Compute the steering direction, base alpha, and injection layer.
+
+        The direction is the L2-normalized sum of the concept embeddings, so a
+        concept group composes into one unit direction. base_alpha scales it:
+        with normalize_mai_lm_target, mai_lm_target reads in logit units
+        (divided by the direction's peak LM-head alignment); otherwise it is the
+        raw alpha. The effective top-token logit shift is base_alpha * peak.
+        """
+        head = self.model.known_head
+        ids = torch.tensor(steering.concept_ids, device=self.device)
+        emb = head._get_embedding(ids).float()  # (K, D)
+
+        vec = emb.sum(dim=0)  # (D,)
+        direction = vec / (vec.norm(p=2) + 1e-12)
+
+        lm_weight = self.model.transformer.lm_head.weight.float()  # (V, D)
+        peak = max(float((lm_weight @ direction).max().item()), 1e-6)
+        if steering.normalize_mai_lm_target:
+            base_alpha = steering.mai_lm_target / peak
+        else:
+            base_alpha = steering.mai_lm_target
+
+        inject_layer = (
+            steering.inject_layer if steering.inject_layer is not None else self.model_config.n_layers // 2
+        )
+
+        model_dtype = next(self.model.parameters()).dtype
+        return direction.to(model_dtype), float(base_alpha), inject_layer
+
+    def _position_injection(
+        self, input_ids: torch.Tensor, direction: torch.Tensor | None
+    ) -> torch.Tensor | None:
+        """
+        Build a (B, T, D) injection that is the direction at masked positions and
+        zero elsewhere (mask-aligned injection). Rebuilt each step as the set of
+        masked positions shrinks.
+        """
+        if direction is None:
+            return None
+        masked = input_ids == self.mask_token_id  # (B, T)
+        inj = torch.zeros(*input_ids.shape, direction.shape[0], dtype=direction.dtype, device=self.device)
+        inj[masked] = direction
+        return inj
+
+    def _build_relu_mask(self, relu_logit_mask: dict[int, float]) -> torch.Tensor:
+        """
+        Build a (V,) vocab suppression vector to subtract from logits.
+
+        For each concept, alignment with the vocab is lm_head.weight @ embedding.
+        Only positive alignment is suppressed (relu), so the mask removes tokens
+        the concept promotes without boosting the rest.
+        """
+        head = self.model.known_head
+        lm_weight = self.model.transformer.lm_head.weight.float()  # (V, D)
+
+        ids = torch.tensor(list(relu_logit_mask.keys()), device=self.device)
+        strengths = torch.tensor(list(relu_logit_mask.values()), device=self.device, dtype=torch.float32)
+
+        emb = head._get_embedding(ids).float()  # (K, D)
+        alignment = emb @ lm_weight.t()  # (K, V)
+        return (strengths.unsqueeze(-1) * alignment.clamp_min(0.0)).sum(dim=0)  # (V,)
