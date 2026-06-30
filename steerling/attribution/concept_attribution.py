@@ -1,23 +1,8 @@
-"""
-Faithful concept attribution captured during generation.
-
-Instead of running a post-hoc forward pass over the fully-unmasked sequence,
-this module captures concept attributions at commit time — the moment each
-token is decided — using the actual partially-masked context the model
-operated in.
-
-Usage:
-    from steerling import SteerlingGenerator, GenerationConfig
-    from steerling.attribution import FaithfulConceptAttributor
-
-    generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b", device="cuda")
-    attributor = FaithfulConceptAttributor(generator)
-
-    gen_output, attribution = attributor.attribute("AI technology will")
-"""
+"""Faithful concept attribution captured during generation."""
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,9 +16,18 @@ from steerling import GenerationConfig, SteerlingGenerator
 from steerling.inference.causal_diffusion import GenerationOutput, GenerationStepInfo
 
 
-# ---------------------------------------------------------------------------
-# Commit event
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class VerificationResult:
+    """Result of attribution decomposition verification."""
+
+    passed: bool
+    max_abs_error: float
+    error_percentiles: dict[str, float]
+    details: str
+
+    def __repr__(self) -> str:
+        status = "PASS" if self.passed else "FAIL"
+        return f"VerificationResult({status}, {self.details})"
 
 
 @dataclass
@@ -63,11 +57,6 @@ class CommitEvent:
     known_logits: Tensor
     unk_indices: Tensor | None
     unk_logits: Tensor | None
-
-
-# ---------------------------------------------------------------------------
-# Unknown top-k helper
-# ---------------------------------------------------------------------------
 
 
 @torch.no_grad()
@@ -102,9 +91,135 @@ def _compute_unknown_topk(
     return indices, logits  # [1, P, k], [1, P, k]
 
 
-# ---------------------------------------------------------------------------
-# Attribution accumulator
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class OutputToConceptAttribution:
+    """
+    Token-level attribution of output logits to concepts.
+
+    All tensors use batch dimension first. For single examples, B=1.
+
+    Attributes:
+        target_token_ids: [B, T] tokens being explained
+        target_logits: [B, T] logit values for those tokens
+        known_indices: [B, T, k_known] active known concept indices
+        known_weights: [B, T, k_known] sigmoid weights in [0, 1]
+        known_contributions: [B, T, k_known] w_i * (v_i^T @ W_{y_t})
+        unk_indices: [B, T, k_unk] active unknown concept indices
+        unk_weights: [B, T, k_unk] sigmoid weights in [0, 1]
+        unk_contributions: [B, T, k_unk] w_j * (v_j^T @ W_{y_t})
+        epsilon_contribution: [B, T] residual contribution per position
+    """
+
+    target_token_ids: Tensor
+    target_logits: Tensor
+    known_indices: Tensor
+    known_weights: Tensor
+    known_contributions: Tensor
+    unk_indices: Tensor
+    unk_weights: Tensor
+    unk_contributions: Tensor
+    epsilon_contribution: Tensor
+
+    def verify(self, atol: float = 1e-4) -> VerificationResult:
+        """Verify contributions sum to target logits."""
+        reconstructed = (
+            self.known_contributions.sum(dim=-1)
+            + self.unk_contributions.sum(dim=-1)
+            + self.epsilon_contribution
+        )
+        errors = (reconstructed - self.target_logits).abs()
+
+        return VerificationResult(
+            passed=bool((errors < atol).all()),
+            max_abs_error=float(errors.max()),
+            error_percentiles={
+                "p50": float(errors.median()),
+                "p95": float(errors.quantile(0.95)),
+                "p99": float(errors.quantile(0.99)),
+            },
+            details=f"Max error: {errors.max():.6f}, Mean: {errors.mean():.6f}",
+        )
+
+    def top_k(self, k: int) -> OutputToConceptAttribution:
+        """Return attribution with only top-k concepts by absolute contribution."""
+        k_known = min(k, self.known_contributions.shape[-1])
+        k_unk = min(k, self.unk_contributions.shape[-1])
+
+        if k_known == 0 and k_unk == 0:
+            return self
+
+        if k_known > 0:
+            _, known_sel = torch.topk(self.known_contributions.abs(), k_known, dim=-1)
+            known_indices = torch.gather(self.known_indices, -1, known_sel)
+            known_weights = torch.gather(self.known_weights, -1, known_sel)
+            known_contributions = torch.gather(self.known_contributions, -1, known_sel)
+        else:
+            known_indices = self.known_indices
+            known_weights = self.known_weights
+            known_contributions = self.known_contributions
+
+        if k_unk > 0:
+            _, unk_sel = torch.topk(self.unk_contributions.abs(), k_unk, dim=-1)
+            unk_indices = torch.gather(self.unk_indices, -1, unk_sel)
+            unk_weights = torch.gather(self.unk_weights, -1, unk_sel)
+            unk_contributions = torch.gather(self.unk_contributions, -1, unk_sel)
+        else:
+            unk_indices = self.unk_indices
+            unk_weights = self.unk_weights
+            unk_contributions = self.unk_contributions
+
+        return OutputToConceptAttribution(
+            target_token_ids=self.target_token_ids,
+            target_logits=self.target_logits,
+            known_indices=known_indices,
+            known_weights=known_weights,
+            known_contributions=known_contributions,
+            unk_indices=unk_indices,
+            unk_weights=unk_weights,
+            unk_contributions=unk_contributions,
+            epsilon_contribution=self.epsilon_contribution,
+        )
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Convert to pandas DataFrame for analysis."""
+        rows = []
+        B, T = self.target_token_ids.shape
+        k_known = self.known_indices.shape[-1]
+        k_unk = self.unk_indices.shape[-1]
+
+        for b in range(B):
+            for t in range(T):
+                target_id = int(self.target_token_ids[b, t])
+                target_logit = float(self.target_logits[b, t])
+                eps = float(self.epsilon_contribution[b, t])
+
+                for ki in range(k_known):
+                    rows.append({
+                        "batch": b, "position": t,
+                        "target_token_id": target_id, "target_logit": target_logit,
+                        "concept_type": "known",
+                        "concept_id": int(self.known_indices[b, t, ki]),
+                        "weight": float(self.known_weights[b, t, ki]),
+                        "contribution": float(self.known_contributions[b, t, ki]),
+                        "epsilon": eps,
+                    })
+
+                for ui in range(k_unk):
+                    rows.append({
+                        "batch": b, "position": t,
+                        "target_token_id": target_id, "target_logit": target_logit,
+                        "concept_type": "discovered",
+                        "concept_id": int(self.unk_indices[b, t, ui]),
+                        "weight": float(self.unk_weights[b, t, ui]),
+                        "contribution": float(self.unk_contributions[b, t, ui]),
+                        "epsilon": eps,
+                    })
+
+        return pd.DataFrame(rows)
+
+    def save(self, path: str) -> None:
+        """Save to parquet."""
+        self.to_dataframe().to_parquet(path, index=False)
 
 
 class AttributionAccumulator:
@@ -146,13 +261,22 @@ class AttributionAccumulator:
         self.unknown_head = unknown_head
 
         # Pre-allocate output buffers
+        self.token_ids = torch.zeros(1, seq_len, dtype=torch.long, device=device)
+        self.target_logits = torch.zeros(1, seq_len, device=device)
+
         self.known_indices = torch.zeros(1, seq_len, k_known, dtype=torch.long, device=device)
+        self.known_weights = torch.zeros(1, seq_len, k_known, device=device)
         self.known_contributions = torch.zeros(1, seq_len, k_known, device=device)
 
         self.unk_indices = torch.zeros(1, seq_len, k_unk, dtype=torch.long, device=device)
+        self.unk_weights = torch.zeros(1, seq_len, k_unk, device=device)
         self.unk_contributions = torch.zeros(1, seq_len, k_unk, device=device)
 
         self.residual_contribution = torch.zeros(1, seq_len, device=device)
+
+        # Tracking
+        self.committed = torch.zeros(seq_len, dtype=torch.bool, device=device)
+        self.commit_step = torch.full((seq_len,), -2, dtype=torch.long, device=device)
 
     @torch.no_grad()
     def commit(self, event: CommitEvent) -> None:
@@ -197,48 +321,63 @@ class AttributionAccumulator:
         residual = target_logits_f - k_contrib.sum(-1) - u_contrib.sum(-1)  # [P]
 
         # Scatter-write into pre-allocated buffers
+        self.token_ids[0, pos] = event.token_ids
+        self.target_logits[0, pos] = target_logits_f
+
         self.known_indices[0, pos] = event.known_indices
+        self.known_weights[0, pos] = k_w
         self.known_contributions[0, pos] = k_contrib
 
         if event.unk_indices is not None:
             self.unk_indices[0, pos] = event.unk_indices
+        self.unk_weights[0, pos] = u_w
         self.unk_contributions[0, pos] = u_contrib
 
         self.residual_contribution[0, pos] = residual
 
-    def result(self) -> AttributionResult:
+        self.committed[pos] = True
+        self.commit_step[pos] = event.step
+
+    def result(self) -> OutputToConceptAttribution:
         """Build final attribution from accumulated commits."""
-        return AttributionResult(
+        n_uncommitted = (~self.committed).sum().item()
+        if n_uncommitted > 0:
+            warnings.warn(
+                f"{n_uncommitted} of {self.seq_len} positions were never "
+                f"committed. Their attributions will be zero.",
+                stacklevel=2,
+            )
+
+        return OutputToConceptAttribution(
+            target_token_ids=self.token_ids,
+            target_logits=self.target_logits,
             known_indices=self.known_indices,
+            known_weights=self.known_weights,
             known_contributions=self.known_contributions,
             unk_indices=self.unk_indices,
+            unk_weights=self.unk_weights,
             unk_contributions=self.unk_contributions,
-            epsilon=self.residual_contribution,
+            epsilon_contribution=self.residual_contribution,
         )
 
+    @property
+    def coverage(self) -> float:
+        """Fraction of positions that have been committed."""
+        return float(self.committed.float().mean().item())
 
-# ---------------------------------------------------------------------------
-# Attribution result and entries
-# ---------------------------------------------------------------------------
+    @property
+    def commit_order(self) -> Tensor:
+        """[T] tensor of commit steps for analyzing generation order."""
+        return self.commit_step
 
 
-class AttributionResult(TypedDict):
-    known_indices: Tensor  # (B, T, K_known)
-    known_contributions: Tensor  # (B, T, K_known)
-    unk_indices: Tensor  # (B, T, K_unk)
-    unk_contributions: Tensor  # (B, T, K_unk)
-    epsilon: Tensor  # (B, T)
+AttributionResult = OutputToConceptAttribution
 
 
 class AttributionEntry(TypedDict):
     label: str
     type: str  # "known" | "discovered"
     contribution: float
-
-
-# ---------------------------------------------------------------------------
-# Concept labels
-# ---------------------------------------------------------------------------
 
 
 class ConceptLabels:
@@ -284,11 +423,6 @@ class ConceptLabels:
         head = self._heads.get(concept_id, concept_type)
         prefix = "Discovered" if head == "unknown" else "Known"
         return f"{prefix}: {name}"
-
-
-# ---------------------------------------------------------------------------
-# Chunk-level attribution
-# ---------------------------------------------------------------------------
 
 
 def find_chunk_boundaries(
@@ -348,7 +482,7 @@ def find_chunk_boundaries(
 
 
 def chunk_attribution(
-    attr: AttributionResult,
+    attr: OutputToConceptAttribution,
     start: int,
     end: int,
     batch: int = 0,
@@ -363,7 +497,7 @@ def chunk_attribution(
     scale differences across positions so every token votes equally to the chunk.
 
     Args:
-        attr: AttributionResult from the accumulator.
+        attr: OutputToConceptAttribution from the accumulator.
         start: Start token index (inclusive).
         end: End token index (exclusive).
         batch: Batch index to use (default 0).
@@ -376,11 +510,11 @@ def chunk_attribution(
     """
     labels = concept_labels or ConceptLabels()
 
-    k_idx = attr["known_indices"][batch, start:end]  # (T, K_known)
-    k_c = attr["known_contributions"][batch, start:end]  # (T, K_known)
-    u_idx = attr["unk_indices"][batch, start:end]  # (T, K_unk)
-    u_c = attr["unk_contributions"][batch, start:end]  # (T, K_unk)
-    eps = attr["epsilon"][batch, start:end]  # (T,)
+    k_idx = attr.known_indices[batch, start:end]  # (T, K_known)
+    k_c = attr.known_contributions[batch, start:end]  # (T, K_known)
+    u_idx = attr.unk_indices[batch, start:end]  # (T, K_unk)
+    u_c = attr.unk_contributions[batch, start:end]  # (T, K_unk)
+    eps = attr.epsilon_contribution[batch, start:end]  # (T,)
 
     pos_total = (k_c.abs().sum(-1) + u_c.abs().sum(-1) + eps.abs()).clamp(min=1e-8)  # (T,)
 
@@ -424,11 +558,6 @@ def chunk_attribution(
     return entries, eps_pct
 
 
-# ---------------------------------------------------------------------------
-# High-level attributor
-# ---------------------------------------------------------------------------
-
-
 class FaithfulConceptAttributor:
     """
     Faithful concept attribution captured during generation.
@@ -462,7 +591,7 @@ class FaithfulConceptAttributor:
         self._num_known_concepts = getattr(
             getattr(self.backbone, "known_head", None), "n_concepts", 0
         )
-        self.last_attribution: AttributionResult | None = None
+        self.last_attribution: OutputToConceptAttribution | None = None
 
     @torch.no_grad()
     def attribute(

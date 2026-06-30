@@ -120,7 +120,7 @@ We provide notebooks for generation, logit contribution decomposition, chunk-lev
 - [`notebooks/base_model/`](notebooks/base_model/) — Base model (`guidelabs/steerling-8b`)
 - [`notebooks/instruct_model/`](notebooks/instruct_model/) — Instruct model (`guidelabs/steerling-8b-instruct`)
 
-There is also a [search_concepts.ipynb](notebooks/search_concepts.ipynb) notebook for browsing the concept vocabulary.
+There is also a [search_concepts.ipynb](notebooks/search_concepts.ipynb) notebook for browsing the concept vocabulary. Concept labels are in `assets/concepts/concept_labels.parquet`.
 
 ## FAQ
 
@@ -143,7 +143,7 @@ There is also a [search_concepts.ipynb](notebooks/search_concepts.ipynb) noteboo
   - Together they reconstruct the full hidden state: `hidden ≈ known_features + discovered_features + epsilon`.
 
 - **How do I find concept IDs for steering?**\
-  A full walkthrough of concept extraction and steering is coming in the next few weeks.
+  Use [search_concepts.ipynb](notebooks/search_concepts.ipynb) to browse and search concept names.
 
 - **What GPU do I need?**\
   Steerling-8B in bfloat16 requires approximately 18 GB VRAM. It fits on a single H100, A100 (40GB or 80GB), A6000 (48GB), or RTX 4090 (24GB).

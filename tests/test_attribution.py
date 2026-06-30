@@ -12,9 +12,9 @@ import pytest
 
 from steerling.attribution.concept_attribution import (
     AttributionAccumulator,
-    AttributionResult,
     CommitEvent,
     ConceptLabels,
+    OutputToConceptAttribution,
     chunk_attribution,
     find_chunk_boundaries,
 )
@@ -265,8 +265,8 @@ class TestAccumulator:
         # Position 3 should still be zero
         assert accumulator.known_contributions[0, 3].abs().sum() == 0
 
-    def test_result_types(self, setup, device):
-        """result() returns correct TypedDict keys."""
+    def test_result_fields(self, setup, device):
+        """result() returns OutputToConceptAttribution with expected fields."""
         known_head, _, lm_head_weight, _ = setup
 
         accumulator = AttributionAccumulator(
@@ -275,11 +275,42 @@ class TestAccumulator:
         )
 
         result = accumulator.result()
-        assert "known_indices" in result
-        assert "known_contributions" in result
-        assert "unk_indices" in result
-        assert "unk_contributions" in result
-        assert "epsilon" in result
+        assert isinstance(result, OutputToConceptAttribution)
+        assert result.known_indices.shape == (1, 5, 2)
+        assert result.known_weights.shape == (1, 5, 2)
+        assert result.known_contributions.shape == (1, 5, 2)
+        assert result.target_token_ids.shape == (1, 5)
+        assert result.target_logits.shape == (1, 5)
+        assert result.epsilon_contribution.shape == (1, 5)
+
+    def test_committed_tracking(self, setup, device):
+        """Accumulator tracks which positions have been committed."""
+        known_head, _, lm_head_weight, _ = setup
+        k = 2
+
+        accumulator = AttributionAccumulator(
+            seq_len=5, k_known=k, k_unk=0, device=device,
+            lm_head_weight=lm_head_weight, known_head=known_head,
+        )
+
+        assert accumulator.coverage == 0.0
+
+        accumulator.commit(CommitEvent(
+            step=0,
+            positions=torch.tensor([1, 3], device=device),
+            token_ids=torch.tensor([5, 6], device=device),
+            target_logits=torch.tensor([1.0, 2.0], device=device),
+            known_indices=torch.arange(k, device=device).unsqueeze(0).expand(2, k),
+            known_logits=torch.randn(2, k, device=device),
+            unk_indices=None, unk_logits=None,
+        ))
+
+        assert accumulator.coverage == pytest.approx(2 / 5)
+        assert accumulator.committed[1] and accumulator.committed[3]
+        assert not accumulator.committed[0]
+        assert accumulator.commit_step[1] == 0
+        assert accumulator.commit_step[3] == 0
+        assert accumulator.commit_step[0] == -2
 
     def test_empty_commit(self, setup, device):
         """Committing zero positions is a no-op."""
@@ -314,12 +345,16 @@ class TestChunkAttribution:
     def test_normalization_scale_invariant(self, device):
         """Chunk attribution is scale-invariant across positions."""
         # Two positions with very different scales
-        result = AttributionResult(
+        result = OutputToConceptAttribution(
+            target_token_ids=torch.zeros(1, 2, dtype=torch.long, device=device),
+            target_logits=torch.tensor([[15.0, 0.15]], device=device),
             known_indices=torch.tensor([[[0, 1], [0, 1]]], device=device),
+            known_weights=torch.ones(1, 2, 2, device=device),
             known_contributions=torch.tensor([[[10.0, 5.0], [0.1, 0.05]]], device=device),
             unk_indices=torch.zeros(1, 2, 0, dtype=torch.long, device=device),
+            unk_weights=torch.zeros(1, 2, 0, device=device),
             unk_contributions=torch.zeros(1, 2, 0, device=device),
-            epsilon=torch.tensor([[0.0, 0.0]], device=device),
+            epsilon_contribution=torch.tensor([[0.0, 0.0]], device=device),
         )
 
         entries, eps_pct = chunk_attribution(result, 0, 2, batch=0)
@@ -333,12 +368,16 @@ class TestChunkAttribution:
 
     def test_epsilon_percentage(self, device):
         """Epsilon percentage is computed correctly."""
-        result = AttributionResult(
+        result = OutputToConceptAttribution(
+            target_token_ids=torch.zeros(1, 1, dtype=torch.long, device=device),
+            target_logits=torch.tensor([[10.0]], device=device),
             known_indices=torch.tensor([[[0]]], device=device),
+            known_weights=torch.ones(1, 1, 1, device=device),
             known_contributions=torch.tensor([[[9.0]]], device=device),
             unk_indices=torch.zeros(1, 1, 0, dtype=torch.long, device=device),
+            unk_weights=torch.zeros(1, 1, 0, device=device),
             unk_contributions=torch.zeros(1, 1, 0, device=device),
-            epsilon=torch.tensor([[1.0]], device=device),
+            epsilon_contribution=torch.tensor([[1.0]], device=device),
         )
 
         _, eps_pct = chunk_attribution(result, 0, 1, batch=0)
@@ -349,12 +388,16 @@ class TestChunkAttribution:
         """Unknown concept IDs are offset by num_known_concepts."""
         labels = ConceptLabels()  # no CSV, will use fallback labels
 
-        result = AttributionResult(
+        result = OutputToConceptAttribution(
+            target_token_ids=torch.zeros(1, 1, dtype=torch.long, device=device),
+            target_logits=torch.tensor([[1.0]], device=device),
             known_indices=torch.zeros(1, 1, 1, dtype=torch.long, device=device),
+            known_weights=torch.ones(1, 1, 1, device=device),
             known_contributions=torch.zeros(1, 1, 1, device=device),
             unk_indices=torch.tensor([[[5]]], device=device),
+            unk_weights=torch.ones(1, 1, 1, device=device),
             unk_contributions=torch.tensor([[[1.0]]], device=device),
-            epsilon=torch.tensor([[0.0]], device=device),
+            epsilon_contribution=torch.tensor([[0.0]], device=device),
         )
 
         entries, _ = chunk_attribution(
@@ -432,3 +475,137 @@ class TestConceptLabels:
     def test_missing_file(self, tmp_path):
         labels = ConceptLabels(tmp_path / "nonexistent.csv")
         assert labels.label(0, "known") == "Known: #0"
+
+
+class TestOutputToConceptAttribution:
+    """Test methods on the OutputToConceptAttribution dataclass."""
+
+    def _make_attr(self, device):
+        return OutputToConceptAttribution(
+            target_token_ids=torch.tensor([[1, 2, 3]], device=device),
+            target_logits=torch.tensor([[10.0, 20.0, 30.0]], device=device),
+            known_indices=torch.tensor([[[0, 1, 2], [3, 4, 5], [6, 7, 8]]], device=device),
+            known_weights=torch.tensor([[[0.9, 0.5, 0.1], [0.8, 0.4, 0.2], [0.7, 0.3, 0.6]]], device=device),
+            known_contributions=torch.tensor([[[5.0, 3.0, 1.0], [8.0, 6.0, 2.0], [10.0, 4.0, 7.0]]], device=device),
+            unk_indices=torch.tensor([[[0, 1], [2, 3], [4, 5]]], device=device),
+            unk_weights=torch.tensor([[[0.6, 0.3], [0.5, 0.2], [0.4, 0.1]]], device=device),
+            unk_contributions=torch.tensor([[[0.5, 0.3], [1.5, 1.0], [3.0, 2.0]]], device=device),
+            epsilon_contribution=torch.tensor([[0.2, 1.5, 4.0]], device=device),
+        )
+
+    def test_verify_passes(self, device):
+        """Verify passes when contributions sum to target logits."""
+        attr = self._make_attr(device)
+        result = attr.verify()
+        assert result.passed
+        assert result.max_abs_error < 1e-4
+
+    def test_verify_fails_on_mismatch(self, device):
+        """Verify fails when target logits don't match contributions."""
+        attr = OutputToConceptAttribution(
+            target_token_ids=torch.tensor([[1]], device=device),
+            target_logits=torch.tensor([[999.0]], device=device),
+            known_indices=torch.tensor([[[0]]], device=device),
+            known_weights=torch.tensor([[[0.5]]], device=device),
+            known_contributions=torch.tensor([[[1.0]]], device=device),
+            unk_indices=torch.zeros(1, 1, 0, dtype=torch.long, device=device),
+            unk_weights=torch.zeros(1, 1, 0, device=device),
+            unk_contributions=torch.zeros(1, 1, 0, device=device),
+            epsilon_contribution=torch.tensor([[0.0]], device=device),
+        )
+        result = attr.verify()
+        assert not result.passed
+
+    def test_top_k(self, device):
+        """top_k selects concepts with largest absolute contribution."""
+        attr = self._make_attr(device)
+        top2 = attr.top_k(2)
+
+        assert top2.known_contributions.shape == (1, 3, 2)
+        assert top2.known_indices.shape == (1, 3, 2)
+        assert top2.known_weights.shape == (1, 3, 2)
+        assert top2.unk_contributions.shape == (1, 3, 2)
+
+        # At position 0: contributions [5.0, 3.0, 1.0] → top-2 are 5.0, 3.0
+        top2_vals = top2.known_contributions[0, 0].sort(descending=True).values
+        assert torch.allclose(top2_vals, torch.tensor([5.0, 3.0], device=device))
+
+    def test_to_dataframe(self, device):
+        """to_dataframe returns a DataFrame with expected columns and rows."""
+        attr = self._make_attr(device)
+        df = attr.to_dataframe()
+
+        expected_cols = {"batch", "position", "target_token_id", "target_logit",
+                         "concept_type", "concept_id", "weight", "contribution", "epsilon"}
+        assert expected_cols == set(df.columns)
+
+        # 3 positions × (3 known + 2 unknown) = 15 rows
+        assert len(df) == 15
+        assert set(df["concept_type"].unique()) == {"known", "discovered"}
+
+    def test_chunk_aggregation_end_to_end(self, device):
+        """Full pipeline: accumulator → result → chunk_attribution produces correct chunks."""
+        dim = 16
+        vocab = 100
+        k_known = 3
+        k_unk = 2
+        seq_len = 10
+        eoc_id = 99
+
+        known_head = FakeConceptHead(20, dim, device)
+        unknown_head = FakeConceptHead(30, dim, device)
+        lm_head_weight = torch.randn(vocab, dim, device=device)
+
+        accumulator = AttributionAccumulator(
+            seq_len=seq_len, k_known=k_known, k_unk=k_unk, device=device,
+            lm_head_weight=lm_head_weight, known_head=known_head,
+            unknown_head=unknown_head,
+        )
+
+        # Simulate generation: commit all positions
+        # Token sequence: [prompt, prompt, 1, 2, EOC, 3, 4, 5, EOC, 6]
+        token_ids = [10, 11, 1, 2, eoc_id, 3, 4, 5, eoc_id, 6]
+        prompt_len = 2
+
+        for pos in range(seq_len):
+            accumulator.commit(CommitEvent(
+                step=pos,
+                positions=torch.tensor([pos], device=device),
+                token_ids=torch.tensor([token_ids[pos]], device=device),
+                target_logits=torch.tensor([float(pos)], device=device),
+                known_indices=torch.arange(k_known, device=device).unsqueeze(0),
+                known_logits=torch.randn(1, k_known, device=device),
+                unk_indices=torch.arange(k_unk, device=device).unsqueeze(0),
+                unk_logits=torch.randn(1, k_unk, device=device),
+            ))
+
+        assert accumulator.coverage == 1.0
+
+        attr = accumulator.result()
+        assert attr.verify().passed
+
+        # Find chunks (skip prompt)
+        chunks = find_chunk_boundaries(
+            token_ids, eoc_id=eoc_id,
+            start_index=prompt_len, include_final_chunk=True,
+        )
+
+        # Expected: [2,4), [5,8), [9,10)
+        assert len(chunks) == 3
+        assert chunks[0] == (2, 4)
+        assert chunks[1] == (5, 8)
+        assert chunks[2] == (9, 10)
+
+        # chunk_attribution should return entries for each chunk
+        for start, end in chunks:
+            entries, eps_pct = chunk_attribution(attr, start, end, batch=0)
+            assert len(entries) > 0
+            assert isinstance(eps_pct, float)
+            # Every entry has required fields
+            for e in entries:
+                assert "label" in e
+                assert "type" in e
+                assert "contribution" in e
+            # Contributions + epsilon should roughly account for all mass
+            total = sum(abs(e["contribution"]) for e in entries) + abs(eps_pct / 100)
+            assert total > 0
