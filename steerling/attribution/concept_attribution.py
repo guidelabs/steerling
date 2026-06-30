@@ -18,6 +18,7 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
@@ -290,39 +291,59 @@ class ConceptLabels:
 # ---------------------------------------------------------------------------
 
 
-def find_chunks(token_ids: Tensor, tokenizer) -> list[tuple[int, int]]:
-    """
-    Split token IDs at chunk boundaries (<|endofchunk|> and <|eot_id|>).
+def find_chunk_boundaries(
+    token_ids: list[int],
+    eoc_id: int,
+    *,
+    start_index: int = 0,
+    stop_ids: Iterable[int] | None = None,
+    include_final_chunk: bool = False,
+) -> list[tuple[int, int]]:
+    """Split ``token_ids`` into chunks at EOC and stop-token boundaries.
+
+    Each returned ``(start, end)`` pair is a half-open interval ``[start, end)``
+    into ``token_ids``. Indices are absolute (already offset by
+    ``start_index``). The boundary token at ``end``, i.e. an EOC or a stop
+    token, is NOT included in the chunk.
 
     Args:
-        token_ids: (L,) or (1, L) token tensor.
-        tokenizer: Tokenizer with optional endofchunk_token_id and eot_id attributes.
+        token_ids: Full list of token IDs (prompt + generation).
+        eoc_id: End-of-chunk token ID. Splits chunks; excluded from every span.
+        start_index: Index to begin scanning from. Tokens before this index are
+            ignored (e.g. to skip the prompt). Defaults to 0.
+        stop_ids: Token IDs (e.g. EOS, EOT) that terminate chunking. The chunk
+            closed by the first stop token is emitted (if non-empty); the stop
+            token and everything after it are excluded. If None, no stop
+            handling is applied.
+        include_final_chunk: If True, also emit the trailing span after the last
+            EOC when it is *not* terminated by an EOC or stop token (i.e. an
+            incomplete final chunk). Empty trailing spans are never emitted.
+            Defaults to False.
 
     Returns:
-        List of (start, end) index pairs, one per chunk.
+        List of ``(start, end)`` index pairs, one per chunk, in order.
     """
-    ids = token_ids.squeeze()
-    eoc_id = getattr(tokenizer, "endofchunk_token_id", None)
-    eot_id = getattr(tokenizer, "eot_id", None)
-
-    boundary_ids = set()
-    if eoc_id is not None:
-        boundary_ids.add(eoc_id)
-    if eot_id is not None:
-        boundary_ids.add(eot_id)
-
-    if not boundary_ids:
-        return [(0, int(ids.shape[0]))]
+    stops = frozenset(stop_ids) if stop_ids is not None else frozenset()
 
     chunks: list[tuple[int, int]] = []
-    prev = 0
-    for p in range(len(ids)):
-        if int(ids[p]) in boundary_ids:
-            if p > prev:
-                chunks.append((prev, p))
-            prev = p + 1
-    if prev < len(ids):
-        chunks.append((prev, len(ids)))
+    prev = start_index
+    n = len(token_ids)
+
+    i = start_index
+    while i < n:
+        tok = token_ids[i]
+        if tok in stops:
+            if prev < i:
+                chunks.append((prev, i))
+            return chunks
+        if tok == eoc_id:
+            chunks.append((prev, i))
+            prev = i + 1
+        i += 1
+
+    if include_final_chunk and prev < n:
+        chunks.append((prev, n))
+
     return chunks
 
 
@@ -490,7 +511,6 @@ class FaithfulConceptAttributor:
         )
 
         # Step callback — fires at each commit, computes attribution inline
-        known_head_ref = self.backbone.known_head
         unknown_head_ref = unknown_head
         unk_topk = self.unknown_topk
 
@@ -533,8 +553,16 @@ class FaithfulConceptAttributor:
         attr = accumulator.result()
         self.last_attribution = attr  # expose for custom chunk ranges
 
-        tokens = gen_output.tokens.unsqueeze(0)
-        chunks = find_chunks(tokens, self.generator.tokenizer)
+        eoc_id = getattr(self.generator.tokenizer, "endofchunk_token_id", None)
+        eot_id = getattr(self.generator.tokenizer, "eot_id", None)
+        stop = [eot_id] if eot_id is not None else None
+        chunks = find_chunk_boundaries(
+            gen_output.tokens.tolist(),
+            eoc_id=eoc_id if eoc_id is not None else -1,
+            start_index=gen_output.prompt_tokens,
+            stop_ids=stop,
+            include_final_chunk=True,
+        )
 
         results = []
         for start, end in chunks:

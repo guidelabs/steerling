@@ -5,7 +5,14 @@
 1. **Build HF-compatible files** from a training config:
 
    ```bash
+   # Base model
    python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py
+
+   # Instruct model
+   python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py --instruct
+
+   # Custom output directory (default: hf/)
+   python scripts/hugging_face/build_hf_files.py --config /path/to/training_config.py --output-dir custom/hf/path
    ```
 
    This generates the following files in `hf/`:
@@ -18,7 +25,14 @@
 2. **Upload to HuggingFace Hub**:
 
    ```bash
+   # Upload code files + weights
    python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id guidelabs/steerling-8b
+
+   # Use a different HF files directory (e.g. for instruct)
+   python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id guidelabs/steerling-8b-instruct --hf-dir hf-instruct
+
+   # Upload code files only (skip weights)
+   python scripts/hugging_face/upload_to_hf.py --model-path /path/to/weights --repo-id guidelabs/steerling-8b --skip-weights
    ```
 
    This uploads the generated HF files and safetensor weights to the specified repo.

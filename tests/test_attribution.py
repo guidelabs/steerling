@@ -16,7 +16,7 @@ from steerling.attribution.concept_attribution import (
     CommitEvent,
     ConceptLabels,
     chunk_attribution,
-    find_chunks,
+    find_chunk_boundaries,
 )
 
 
@@ -313,7 +313,6 @@ class TestChunkAttribution:
 
     def test_normalization_scale_invariant(self, device):
         """Chunk attribution is scale-invariant across positions."""
-        k = 2
         # Two positions with very different scales
         result = AttributionResult(
             known_indices=torch.tensor([[[0, 1], [0, 1]]], device=device),
@@ -375,44 +374,45 @@ class TestChunkAttribution:
 # ---------------------------------------------------------------------------
 
 
-class TestFindChunks:
-    """Test chunk boundary detection."""
+class TestFindChunkBoundaries:
+    """Test chunk boundary detection (matches scalex find_chunk_boundaries)."""
 
-    def test_no_boundaries(self):
-        """Without boundary tokens, entire sequence is one chunk."""
-        class FakeTok:
-            pass
-        tok = FakeTok()
-        ids = torch.tensor([1, 2, 3, 4, 5])
-        chunks = find_chunks(ids, tok)
-        assert chunks == [(0, 5)]
-
-    def test_endofchunk_boundary(self):
-        """Splits at endofchunk token."""
-        class FakeTok:
-            endofchunk_token_id = 99
-        tok = FakeTok()
-        ids = torch.tensor([1, 2, 99, 3, 4, 99, 5])
-        chunks = find_chunks(ids, tok)
+    def test_basic_eoc_split(self):
+        """Splits at EOC tokens."""
+        ids = [1, 2, 99, 3, 4, 99, 5]
+        chunks = find_chunk_boundaries(ids, eoc_id=99, include_final_chunk=True)
         assert chunks == [(0, 2), (3, 5), (6, 7)]
 
-    def test_eot_boundary(self):
-        """Splits at eot_id token."""
-        class FakeTok:
-            eot_id = 50
-        tok = FakeTok()
-        ids = torch.tensor([1, 2, 3, 50, 4, 5])
-        chunks = find_chunks(ids, tok)
-        assert chunks == [(0, 3), (4, 6)]
+    def test_no_eoc(self):
+        """No EOC tokens, include_final_chunk=True returns whole sequence."""
+        ids = [1, 2, 3, 4, 5]
+        chunks = find_chunk_boundaries(ids, eoc_id=-1, include_final_chunk=True)
+        assert chunks == [(0, 5)]
 
-    def test_consecutive_boundaries(self):
-        """Consecutive boundary tokens produce no empty chunks."""
-        class FakeTok:
-            endofchunk_token_id = 99
-        tok = FakeTok()
-        ids = torch.tensor([1, 99, 99, 2])
-        chunks = find_chunks(ids, tok)
-        assert chunks == [(0, 1), (3, 4)]
+    def test_no_eoc_no_final(self):
+        """No EOC tokens, include_final_chunk=False returns empty."""
+        ids = [1, 2, 3, 4, 5]
+        chunks = find_chunk_boundaries(ids, eoc_id=-1, include_final_chunk=False)
+        assert chunks == []
+
+    def test_start_index_skips_prompt(self):
+        """start_index skips prompt tokens."""
+        ids = [10, 11, 12, 1, 2, 99, 3, 4]
+        chunks = find_chunk_boundaries(ids, eoc_id=99, start_index=3, include_final_chunk=True)
+        assert chunks == [(3, 5), (6, 8)]
+
+    def test_stop_ids_terminates(self):
+        """stop_ids terminates chunking at the stop token."""
+        ids = [1, 2, 99, 3, 4, 50, 5, 6]
+        chunks = find_chunk_boundaries(ids, eoc_id=99, stop_ids=[50])
+        assert chunks == [(0, 2), (3, 5)]
+
+    def test_consecutive_eoc(self):
+        """Consecutive EOC tokens produce empty chunks (start == end)."""
+        ids = [1, 99, 99, 2]
+        chunks = find_chunk_boundaries(ids, eoc_id=99, include_final_chunk=True)
+        # The empty chunk (2,2) between consecutive EOCs is expected
+        assert chunks == [(0, 1), (2, 2), (3, 4)]
 
 
 # ---------------------------------------------------------------------------
@@ -423,12 +423,12 @@ class TestFindChunks:
 class TestConceptLabels:
     def test_fallback_known(self):
         labels = ConceptLabels()
-        assert labels.label(42, "known") == "Known #42"
+        assert labels.label(42, "known") == "Known: #42"
 
     def test_fallback_discovered(self):
         labels = ConceptLabels()
-        assert labels.label(7, "discovered") == "Discovered #7"
+        assert labels.label(7, "discovered") == "Discovered: #7"
 
     def test_missing_file(self, tmp_path):
         labels = ConceptLabels(tmp_path / "nonexistent.csv")
-        assert labels.label(0, "known") == "Known #0"
+        assert labels.label(0, "known") == "Known: #0"

@@ -232,3 +232,4 @@ jobs/
 *.bak
 *.new
 tests/test_sampling_match.py
+scratch/

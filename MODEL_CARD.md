@@ -25,16 +25,23 @@ pip install steerling
 ```
 
 ```python
+import torch
+from transformers import AutoModel, AutoTokenizer
 from steerling import SteerlingGenerator, GenerationConfig
 
-generator = SteerlingGenerator.from_pretrained("guidelabs/steerling-8b")
+model_id = "guidelabs/steerling-8b"
+model = AutoModel.from_pretrained(model_id, trust_remote_code=True, dtype=torch.bfloat16)
+tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+generator = SteerlingGenerator.from_model(model, tokenizer, device="cuda")
 
 text = generator.generate(
     "The key to understanding neural networks is",
-    GenerationConfig(max_new_tokens=100, seed=42),
+    GenerationConfig(max_new_tokens=128, steps=128, seed=42),
 )
 print(text)
 ```
+
+An instruction-tuned variant is also available: [guidelabs/steerling-8b-instruct](https://huggingface.co/guidelabs/steerling-8b-instruct).
 
 ## Model Details
 
@@ -98,4 +105,8 @@ these upstream licenses for downstream use of the model weights.
 Please check back for updates on the weight licensing terms.
 
 For questions about commercial use of the model weights,
-contact us at info@guidelabs.ai
+contact us at info@guidelabs.ai.
+
+## Paper
+
+For full details, see [Scaling Inherently Interpretable Language Models](https://www.guidelabs.ai/papers/scaling-inherently-interpretable-language-models.pdf).

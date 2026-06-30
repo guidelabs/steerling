@@ -1158,7 +1158,6 @@ class ConceptHead(nn.Module):
         # Only look at valid concepts
         x = tensor.narrow(dim, 0, n_valid)
         kk = min(self.topk, n_valid)
-
         # Get top-k values and indices
         topv, topi = torch.topk(x, kk, dim=dim)
 
@@ -1186,8 +1185,8 @@ class ConceptHead(nn.Module):
             return weights
 
         weights = torch.sigmoid(concept_logits).to(E.dtype)
-
-        if apply_topk and not self.topk_on_logits:
+                                                                                                                                                                                                                 
+        if apply_topk and not self.topk_on_logits:                                                                                                                                                                       
             weights = self.topk_with_cutoff(weights)
 
         return weights
