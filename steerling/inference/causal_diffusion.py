@@ -444,9 +444,9 @@ class SteerlingGenerator:
 
         prompt_index = x != mask_id
 
-        assert gen_length % block_length == 0, (
-            f"max_new_tokens ({gen_length}) must be divisible by block_length ({block_length})"
-        )
+        assert (
+            gen_length % block_length == 0
+        ), f"max_new_tokens ({gen_length}) must be divisible by block_length ({block_length})"
         num_blocks = gen_length // block_length
 
         assert steps % num_blocks == 0, f"steps ({steps}) must be divisible by num_blocks ({num_blocks})"
@@ -493,11 +493,18 @@ class SteerlingGenerator:
                     cond_logits, uncond_logits = torch.chunk(logits, 2, dim=0)
                     logits = uncond_logits + (cfg_scale + 1) * (cond_logits - uncond_logits)
                     interp_outputs = None
-                elif need_outputs:
-                    logits, interp_outputs = self._forward(x, return_outputs=True)
                 else:
+                    # Single steered forward. return_outputs threads attribution
+                    # through the SAME injected pass, so steering is still applied
+                    # when a step_callback is set (was silently dropped before).
                     inj = self._position_injection(x, direction)
-                    logits = self._forward(x, inj, steer_inject_layer, current_alpha)
+                    result = self._forward(
+                        x, inj, steer_inject_layer, current_alpha, return_outputs=need_outputs
+                    )
+                    if need_outputs:
+                        logits, interp_outputs = result
+                    else:
+                        logits, interp_outputs = result, None
 
                 # Work only on masked positions within the current block
                 for j in range(bsz):

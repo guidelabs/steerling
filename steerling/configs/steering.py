@@ -99,7 +99,8 @@ class SteeringConfig(BaseModel):
     @classmethod
     def injection_relu(
         cls,
-        concept_ids: int | list[int],
+        concept_id: int,
+        group_concept_ids: list[int] | None = None,
         mai_lm_target: float = -7.0,
         inject_layer: int | None = None,
         relu_strength: float = 20.0,
@@ -107,18 +108,19 @@ class SteeringConfig(BaseModel):
         """
         Unlearn a concept by negative injection plus a logit mask.
 
-        mai_lm_target is the raw injection alpha (negative suppresses). The logit
-        mask targets the focal concept, which is the first ID in concept_ids.
-        Uses the fixed schedule (constant alpha across generation).
+        The injection direction is built from the focal concept plus any
+        group_concept_ids (summed), matching scalex's group injection. The logit
+        mask targets the focal concept_id only. mai_lm_target is the raw injection
+        alpha (negative suppresses). Uses the fixed schedule (constant alpha).
         """
-        ids = [concept_ids] if isinstance(concept_ids, int) else list(concept_ids)
+        ids = [concept_id] + [c for c in (group_concept_ids or []) if c != concept_id]
         return cls(
             concept_ids=ids,
             mai_lm_target=mai_lm_target,
             normalize_mai_lm_target=False,
             inject_layer=inject_layer,
             inject_alpha_schedule="fixed",
-            relu_logit_mask={ids[0]: relu_strength},
+            relu_logit_mask={concept_id: relu_strength},
         )
 
     @property
