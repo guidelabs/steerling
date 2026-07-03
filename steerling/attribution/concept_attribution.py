@@ -577,7 +577,7 @@ class FaithfulConceptAttributor:
         self,
         generator: SteerlingGenerator,
         concepts_path: Path | str | None = None,
-        unknown_topk: int = 64,
+        unknown_topk: int | None = None,
     ) -> None:
         self.generator = generator
         # Resolve backbone — may be wrapped
@@ -587,6 +587,9 @@ class FaithfulConceptAttributor:
             self.backbone = generator.model
         self.device = generator.device
         self.labels = ConceptLabels(concepts_path)
+        if unknown_topk is None:
+            unk_head = getattr(self.backbone, "unknown_head", None)
+            unknown_topk = getattr(unk_head, "topk", 64) or 64
         self.unknown_topk = unknown_topk
         self._num_known_concepts = getattr(
             getattr(self.backbone, "known_head", None), "n_concepts", 0

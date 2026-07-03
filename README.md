@@ -19,8 +19,8 @@ For more information, tutorials, and updates, visit [guidelabs.ai](https://www.g
 ## Quick Start
 
 ```bash
+uv venv && source .venv/bin/activate
 uv pip install steerling
-source .venv/bin/activate
 ```
 
 ```python
@@ -84,12 +84,17 @@ See [logit_contribution.ipynb](notebooks/base_model/logit_contribution.ipynb) fo
 
 ```bash
 # From PyPI
+uv venv && source .venv/bin/activate
 uv pip install steerling
+
+# From PyPI with notebook dependencies (matplotlib, jupyter, etc.)
+uv pip install steerling[notebook]
 
 # From source
 git clone https://github.com/guidelabs/steerling.git
 cd steerling
-uv sync --extra dev    # full dev environment
+uv sync --extra notebook    # for running notebooks
+uv sync --extra dev         # full dev environment (tests, linting, notebooks)
 source .venv/bin/activate
 ```
 

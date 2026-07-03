@@ -397,7 +397,7 @@ class SteerlingGenerator:
             GenerationOutput with text, tokens, and counts.
         """
         gen_length = config.max_new_tokens
-        steps = config.steps
+        steps = config.steps if config.steps is not None else gen_length
         cfg_scale = config.cfg_scale
 
         # Create a dedicated generator for reproducibility

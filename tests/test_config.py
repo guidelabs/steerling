@@ -54,7 +54,7 @@ class TestGenerationConfig:
     def test_defaults(self):
         config = GenerationConfig()
         assert config.max_new_tokens == 1024
-        assert config.steps == 256
+        assert config.steps is None
         assert config.temperature == 1.2
         assert config.cfg_scale == 0.0
         assert config.seed is None

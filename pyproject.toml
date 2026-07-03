@@ -35,6 +35,7 @@ dependencies = [
     "pydantic ~= 2.10.0",
     "numpy ~= 2.3.0",
     "pandas ~= 2.2.3",
+    "pyarrow >= 15.0.0",
 ]
 
 # LM evaluation harness
