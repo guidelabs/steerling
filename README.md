@@ -10,7 +10,7 @@ An interpretable causal diffusion language model.
 
 Steerling-8B combines masked diffusion language modeling with concept decomposition, enabling:
 - **Generation**: Non-autoregressive text generation via confidence-based unmasking
-- **Attribution**: Decompose predictions into known concept contributions
+- **Attribution**: Decompose predictions into concept contributions, and attribute generated tokens to input tokens
 - **Steering**: Intervene on concept activations to control generation
 - **Embeddings**: Extract hidden, composed, known, or discovered representations
 
@@ -78,7 +78,7 @@ Every prediction Steerling makes can be decomposed into three components: **know
   <img src="assets/images/logit_contribution.png.jpg" width="95%" alt="Per-token logit contribution decomposition" />
 </p>
 
-See [logit_contribution.ipynb](notebooks/base_model/logit_contribution.ipynb) for per-token decomposition and [chunk_level_concept_attribution.ipynb](notebooks/base_model/chunk_level_concept_attribution.ipynb) for chunk-level concept attribution.
+See [logit_contribution.ipynb](notebooks/base_model/logit_contribution.ipynb) for per-token decomposition, [chunk_level_concept_attribution.ipynb](notebooks/base_model/chunk_level_concept_attribution.ipynb) for chunk-level concept attribution, and [feature_attribution.ipynb](notebooks/base_model/feature_attribution.ipynb) for attributing generated tokens to input tokens.
 
 ## Installation
 
@@ -120,7 +120,7 @@ python scripts/evaluate.py --model guidelabs/steerling-8b --tasks hellaswag arc_
 
 ## Notebooks
 
-We provide notebooks for generation, logit contribution decomposition, chunk-level concept attribution, and concept steering (amplification and suppression). Each notebook is available in two versions:
+We provide notebooks for generation, logit contribution decomposition, chunk-level concept attribution, input feature attribution, and concept steering (amplification and suppression). Each notebook is available in two versions:
 
 - [`notebooks/base_model/`](notebooks/base_model/) — Base model (`guidelabs/steerling-8b`)
 - [`notebooks/instruct_model/`](notebooks/instruct_model/) — Instruct model (`guidelabs/steerling-8b-instruct`)

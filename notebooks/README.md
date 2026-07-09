@@ -37,7 +37,8 @@ Each directory contains the same set of workflows adapted for that checkpoint. U
 2. **[Text Generation](base_model/generation.ipynb)** or **[Text Generation (Instruct)](instruct_model/generation_instruct.ipynb)** — block-by-block diffusion generation.
 3. **[Logit Contribution Analysis](base_model/logit_contribution.ipynb)** — per-token decomposition into known, discovered, and residual components.
 4. **[Chunk-to-Concept Attribution](base_model/chunk_level_concept_attribution.ipynb)** — attribute generated text to known concepts.
-5. **[Concept Amplify](base_model/amplify_concept.ipynb)** or **[Concept Suppression](base_model/suppress_concept.ipynb)** — steer generation toward or away from a target concept.
+5. **[Feature Attribution](base_model/feature_attribution.ipynb)** — attribute each generated token back to the input tokens that caused it, via integrated gradients.
+6. **[Concept Amplify](base_model/amplify_concept.ipynb)** or **[Concept Suppression](base_model/suppress_concept.ipynb)** — steer generation toward or away from a target concept.
 
 For instruct workflows, use the corresponding notebooks under [`instruct_model/`](instruct_model/).
 
@@ -56,6 +57,7 @@ For instruct workflows, use the corresponding notebooks under [`instruct_model/`
 | [generation.ipynb](base_model/generation.ipynb) | Text generation via confidence-based block unmasking |
 | [logit_contribution.ipynb](base_model/logit_contribution.ipynb) | Decompose each predicted token's logit into known, discovered, and residual contributions |
 | [chunk_level_concept_attribution.ipynb](base_model/chunk_level_concept_attribution.ipynb) | Attribute generated text chunks to known concepts |
+| [feature_attribution.ipynb](base_model/feature_attribution.ipynb) | Attribute each generated token to the input tokens that caused it, via integrated gradients on the faithful diffusion snapshot |
 | [amplify_concept.ipynb](base_model/amplify_concept.ipynb) | Amplify a target concept during generation via residual-stream injection |
 | [suppress_concept.ipynb](base_model/suppress_concept.ipynb) | Suppress a target concept via negative injection and ReLU logit masking |
 
@@ -66,6 +68,7 @@ For instruct workflows, use the corresponding notebooks under [`instruct_model/`
 | [generation_instruct.ipynb](instruct_model/generation_instruct.ipynb) | Chat-style generation with system, user, and assistant roles |
 | [logit_contribution_instruct.ipynb](instruct_model/logit_contribution_instruct.ipynb) | Per-token logit decomposition during instruct generation |
 | [chunk_level_concept_attribution_instruct.ipynb](instruct_model/chunk_level_concept_attribution_instruct.ipynb) | Chunk-level concept attribution for instruct outputs |
+| [feature_attribution_instruct.ipynb](instruct_model/feature_attribution_instruct.ipynb) | Input feature attribution for instruct outputs, with chat-formatted prompts |
 | [amplify_concept_instruct.ipynb](instruct_model/amplify_concept_instruct.ipynb) | Amplify a concept during instruct generation |
 | [suppress_concept_instruct.ipynb](instruct_model/suppress_concept_instruct.ipynb) | Suppress a concept during instruct generation |
 
@@ -73,6 +76,6 @@ For instruct workflows, use the corresponding notebooks under [`instruct_model/`
 
 - First run downloads ~17 GB of model weights from HuggingFace Hub; later runs load from cache.
 - Concept IDs are checkpoint-specific. Always confirm a concept with `search_concepts.ipynb` before using it in amplify or suppress notebooks.
-- Steering notebooks require an **interpretable** Steerling checkpoint (both public models qualify).
+- Steering and feature-attribution notebooks require an **interpretable** Steerling checkpoint (both public models qualify).
 
 For installation, architecture, and evaluation details, see the [project README](../README.md).
