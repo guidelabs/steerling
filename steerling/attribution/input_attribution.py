@@ -245,6 +245,18 @@ class DiffusionTrace:
     groups: list[CommitGroup]
 
     def __post_init__(self) -> None:
+        # Validate: orders must be contiguous from 0
+        orders = sorted(g.order for g in self.groups)
+        if orders and orders != list(range(len(orders))):
+            raise ValueError(f"CommitGroup orders must be contiguous from 0, got {orders}")
+
+        # Validate: no position committed twice
+        all_positions: list[int] = []
+        for g in self.groups:
+            all_positions.extend(g.positions.tolist())
+        if len(all_positions) != len(set(all_positions)):
+            raise ValueError("A position was committed more than once")
+
         object.__setattr__(self, "padded_seq_length", self.seq_length)
         object.__setattr__(self, "_base", self._build_base())
         order_at, token_at = self._build_caches()
