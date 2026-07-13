@@ -215,7 +215,7 @@ class PositionType(StrEnum):
     GENERATED_MASKED = "generated_masked"  # generation region, never committed
 
 
-@dataclass
+@dataclass(frozen=True)
 class CommitGroup:
     """Tokens committed together in one step_callback invocation."""
 
@@ -225,7 +225,7 @@ class CommitGroup:
     gen_logits: Tensor  # [P] generation-time logit of each committed token
 
 
-@dataclass
+@dataclass(frozen=True)
 class DiffusionTrace:
     """
     Replayable record of one generation: the commit schedule needed to
@@ -245,9 +245,11 @@ class DiffusionTrace:
     groups: list[CommitGroup]
 
     def __post_init__(self) -> None:
-        self.padded_seq_length = self.seq_length
-        self._base = self._build_base()
-        self._order_at, self._token_at = self._build_caches()
+        object.__setattr__(self, "padded_seq_length", self.seq_length)
+        object.__setattr__(self, "_base", self._build_base())
+        order_at, token_at = self._build_caches()
+        object.__setattr__(self, "_order_at", order_at)
+        object.__setattr__(self, "_token_at", token_at)
 
     def _build_base(self) -> Tensor:
         """prompt | masks, the sequence generate_full starts from."""

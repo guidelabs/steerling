@@ -31,7 +31,7 @@ class VerificationResult:
         return f"VerificationResult({status}, {self.details})"
 
 
-@dataclass
+@dataclass(frozen=True)
 class CommitEvent:
     """
     Concept state captured at the moment tokens are committed.
