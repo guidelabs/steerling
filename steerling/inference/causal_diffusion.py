@@ -444,9 +444,9 @@ class SteerlingGenerator:
 
         prompt_index = x != mask_id
 
-        assert gen_length % block_length == 0, (
-            f"max_new_tokens ({gen_length}) must be divisible by block_length ({block_length})"
-        )
+        assert (
+            gen_length % block_length == 0
+        ), f"max_new_tokens ({gen_length}) must be divisible by block_length ({block_length})"
         num_blocks = gen_length // block_length
 
         assert steps % num_blocks == 0, f"steps ({steps}) must be divisible by num_blocks ({num_blocks})"

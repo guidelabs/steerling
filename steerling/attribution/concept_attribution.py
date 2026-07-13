@@ -111,6 +111,7 @@ class OutputToConceptAttribution:
         unk_weights: [B, T, k_unk] sigmoid weights in [0, 1]
         unk_contributions: [B, T, k_unk] w_j * (v_j^T @ W_{y_t})
         epsilon_contribution: [B, T] residual contribution per position
+        committed: [B, T] bool mask, True for positions that were committed
     """
 
     target_token_ids: Tensor
@@ -122,6 +123,7 @@ class OutputToConceptAttribution:
     unk_weights: Tensor
     unk_contributions: Tensor
     epsilon_contribution: Tensor
+    committed: Tensor
 
     def verify(self, atol: float = 1e-4) -> VerificationResult:
         """Verify contributions sum to target logits."""
@@ -181,6 +183,7 @@ class OutputToConceptAttribution:
             unk_weights=unk_weights,
             unk_contributions=unk_contributions,
             epsilon_contribution=self.epsilon_contribution,
+            committed=self.committed,
         )
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -192,6 +195,8 @@ class OutputToConceptAttribution:
 
         for b in range(B):
             for t in range(T):
+                if not self.committed[b, t]:
+                    continue
                 target_id = int(self.target_token_ids[b, t])
                 target_logit = float(self.target_logits[b, t])
                 eps = float(self.epsilon_contribution[b, t])
@@ -369,6 +374,7 @@ class AttributionAccumulator:
             unk_weights=self.unk_weights,
             unk_contributions=self.unk_contributions,
             epsilon_contribution=self.residual_contribution,
+            committed=self.committed.unsqueeze(0),
         )
 
     @property
@@ -531,11 +537,12 @@ def chunk_attribution(
     """
     labels = concept_labels or ConceptLabels()
 
-    k_idx = attr.known_indices[batch, start:end]  # (T, K_known)
-    k_c = attr.known_contributions[batch, start:end]  # (T, K_known)
-    u_idx = attr.unk_indices[batch, start:end]  # (T, K_unk)
-    u_c = attr.unk_contributions[batch, start:end]  # (T, K_unk)
-    eps = attr.epsilon_contribution[batch, start:end]  # (T,)
+    mask = attr.committed[batch, start:end]  # (T,)
+    k_idx = attr.known_indices[batch, start:end][mask]  # (T', K_known)
+    k_c = attr.known_contributions[batch, start:end][mask]  # (T', K_known)
+    u_idx = attr.unk_indices[batch, start:end][mask]  # (T', K_unk)
+    u_c = attr.unk_contributions[batch, start:end][mask]  # (T', K_unk)
+    eps = attr.epsilon_contribution[batch, start:end][mask]  # (T',)
 
     pos_total = (k_c.abs().sum(-1) + u_c.abs().sum(-1) + eps.abs()).clamp(min=1e-8)  # (T,)
 

@@ -125,7 +125,7 @@ class TestTopKConcepts:
         weights_sparse = head.topk_with_cutoff(weights_all)
         nonzero_per_pos = (weights_sparse > 0.0).sum(-1).float()
 
-        assert nonzero_per_pos.max().item() <= k_features, (
-            f"Expected at most {k_features} non-zero weights, got {int(nonzero_per_pos.max())}"
-        )
+        assert (
+            nonzero_per_pos.max().item() <= k_features
+        ), f"Expected at most {k_features} non-zero weights, got {int(nonzero_per_pos.max())}"
         assert nonzero_per_pos.min().item() > 0, "Should have at least 1 non-zero weight"

@@ -118,9 +118,9 @@ class TestAttributionMath:
         )
 
         actual = accumulator.known_contributions[0, 0]  # [K]
-        assert torch.allclose(actual, expected, atol=1e-6), (
-            f"Known contributions don't match:\n  expected={expected}\n  actual={actual}"
-        )
+        assert torch.allclose(
+            actual, expected, atol=1e-6
+        ), f"Known contributions don't match:\n  expected={expected}\n  actual={actual}"
 
     def test_unknown_contribution_formula(self, setup, device):
         """Unknown contribution uses same formula as known."""
@@ -205,9 +205,9 @@ class TestAttributionMath:
         residual = accumulator.residual_contribution[0, 0]
 
         reconstructed = k_sum + u_sum + residual
-        assert torch.allclose(reconstructed, target_logit, atol=1e-5), (
-            f"Residual check failed: {k_sum} + {u_sum} + {residual} = {reconstructed} != {target_logit}"
-        )
+        assert torch.allclose(
+            reconstructed, target_logit, atol=1e-5
+        ), f"Residual check failed: {k_sum} + {u_sum} + {residual} = {reconstructed} != {target_logit}"
 
     def test_float32_precision(self, setup, device):
         """Attribution math is done in float32 even with bfloat16 inputs."""
@@ -406,6 +406,7 @@ class TestChunkAttribution:
             unk_weights=torch.zeros(1, 2, 0, device=device),
             unk_contributions=torch.zeros(1, 2, 0, device=device),
             epsilon_contribution=torch.tensor([[0.0, 0.0]], device=device),
+            committed=torch.ones(1, 2, dtype=torch.bool, device=device),
         )
 
         labels = ConceptLabels("/dev/null/nonexistent")
@@ -430,6 +431,7 @@ class TestChunkAttribution:
             unk_weights=torch.zeros(1, 1, 0, device=device),
             unk_contributions=torch.zeros(1, 1, 0, device=device),
             epsilon_contribution=torch.tensor([[1.0]], device=device),
+            committed=torch.ones(1, 1, dtype=torch.bool, device=device),
         )
 
         labels = ConceptLabels("/dev/null/nonexistent")
@@ -451,6 +453,7 @@ class TestChunkAttribution:
             unk_weights=torch.ones(1, 1, 1, device=device),
             unk_contributions=torch.tensor([[[1.0]]], device=device),
             epsilon_contribution=torch.tensor([[0.0]], device=device),
+            committed=torch.ones(1, 1, dtype=torch.bool, device=device),
         )
 
         entries, _ = chunk_attribution(
@@ -549,6 +552,7 @@ class TestOutputToConceptAttribution:
             unk_weights=torch.tensor([[[0.6, 0.3], [0.5, 0.2], [0.4, 0.1]]], device=device),
             unk_contributions=torch.tensor([[[0.5, 0.3], [1.5, 1.0], [3.0, 2.0]]], device=device),
             epsilon_contribution=torch.tensor([[0.2, 1.5, 4.0]], device=device),
+            committed=torch.ones(1, 3, dtype=torch.bool, device=device),
         )
 
     def test_verify_passes(self, device):
@@ -570,6 +574,7 @@ class TestOutputToConceptAttribution:
             unk_weights=torch.zeros(1, 1, 0, device=device),
             unk_contributions=torch.zeros(1, 1, 0, device=device),
             epsilon_contribution=torch.tensor([[0.0]], device=device),
+            committed=torch.ones(1, 1, dtype=torch.bool, device=device),
         )
         result = attr.verify()
         assert not result.passed

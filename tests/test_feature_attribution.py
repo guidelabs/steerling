@@ -292,9 +292,9 @@ class TestCriticalFeatureAttribution:
         attr_sum = float(attr.attributions[n].sum())
 
         # signed sum should track the signed gap (loose tolerance: random weights, 64 steps)
-        assert abs(attr_sum - gap) <= abs(gap) + 1.0, (
-            f"completeness far off: sum(attr)={attr_sum:.3f} gap={gap:.3f}"
-        )
+        assert (
+            abs(attr_sum - gap) <= abs(gap) + 1.0
+        ), f"completeness far off: sum(attr)={attr_sum:.3f} gap={gap:.3f}"
         # and it must have the same sign as the gap when the gap is not tiny
         if abs(gap) > 1.0:
             assert (attr_sum > 0) == (gap > 0), (
