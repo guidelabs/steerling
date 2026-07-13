@@ -357,7 +357,8 @@ class TestChunkAttribution:
             epsilon_contribution=torch.tensor([[0.0, 0.0]], device=device),
         )
 
-        entries, eps_pct = chunk_attribution(result, 0, 2, batch=0)
+        labels = ConceptLabels("/dev/null/nonexistent")
+        entries, eps_pct = chunk_attribution(result, 0, 2, batch=0, concept_labels=labels)
 
         # Both positions have same relative distribution (2:1),
         # so chunk result should reflect that regardless of scale
@@ -380,13 +381,14 @@ class TestChunkAttribution:
             epsilon_contribution=torch.tensor([[1.0]], device=device),
         )
 
-        _, eps_pct = chunk_attribution(result, 0, 1, batch=0)
+        labels = ConceptLabels("/dev/null/nonexistent")
+        _, eps_pct = chunk_attribution(result, 0, 1, batch=0, concept_labels=labels)
         # eps / (|known| + |eps|) = 1 / (9 + 1) = 10%
         assert abs(eps_pct - 10.0) < 0.1, f"Expected ~10%, got {eps_pct}%"
 
     def test_unknown_offset(self, device):
         """Unknown concept IDs are offset by num_known_concepts."""
-        labels = ConceptLabels()  # no CSV, will use fallback labels
+        labels = ConceptLabels("/dev/null/nonexistent")
 
         result = OutputToConceptAttribution(
             target_token_ids=torch.zeros(1, 1, dtype=torch.long, device=device),
@@ -465,11 +467,11 @@ class TestFindChunkBoundaries:
 
 class TestConceptLabels:
     def test_fallback_known(self):
-        labels = ConceptLabels()
+        labels = ConceptLabels("/dev/null/nonexistent")
         assert labels.label(42, "known") == "Known: #42"
 
     def test_fallback_discovered(self):
-        labels = ConceptLabels()
+        labels = ConceptLabels("/dev/null/nonexistent")
         assert labels.label(7, "discovered") == "Discovered: #7"
 
     def test_missing_file(self, tmp_path):

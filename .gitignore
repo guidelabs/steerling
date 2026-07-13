@@ -200,6 +200,9 @@ play/
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
+# Concept labels (served from HF Hub)
+assets/concepts/*.parquet
+
 # Generated HF files (built by scripts/build_hf_files.py)
 hf*/
 
@@ -226,10 +229,4 @@ __marimo__/
 logs/
 jobs/
 
-# Backup files from API migration
-*_old.py
-*_old.ipynb
-*.bak
-*.new
-tests/test_sampling_match.py
 scratch/

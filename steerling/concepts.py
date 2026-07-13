@@ -15,10 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+from huggingface_hub import hf_hub_download
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_PATH = _REPO_ROOT / "assets" / "concepts" / "concept_labels.parquet"
 _ENV_VAR = "STEERLING_CONCEPTS_PATH"
+_HF_REPO = "guidelabs/steerling"
+_HF_FILENAME = "concept_labels.parquet"
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,12 @@ class ConceptCatalog:
         Resolution order: explicit ``path``, then the ``STEERLING_CONCEPTS_PATH``
         environment variable, then the bundled ``assets/concepts`` file.
         """
-        resolved = Path(path or os.environ.get(_ENV_VAR) or _DEFAULT_PATH)
+        if path is not None:
+            resolved = Path(path)
+        elif os.environ.get(_ENV_VAR):
+            resolved = Path(os.environ[_ENV_VAR])
+        else:
+            resolved = Path(hf_hub_download(_HF_REPO, _HF_FILENAME))
         if not resolved.is_file():
             raise FileNotFoundError(
                 f"Concept labels not found at {resolved}. Pass path=... or set {_ENV_VAR}."

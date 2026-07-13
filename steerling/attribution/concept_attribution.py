@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -388,21 +389,31 @@ class ConceptLabels:
     """
 
     def __init__(self, concepts_path: Path | str | None = None):
-        if concepts_path is not None:
-            p = Path(concepts_path)
-            if p.exists():
-                if p.suffix == ".parquet":
-                    self._df = pd.read_parquet(p)
-                else:
-                    self._df = pd.read_csv(p)
-                    # Legacy CSV uses concept_idx; normalize to concept_id
-                    if "concept_idx" in self._df.columns and "concept_id" not in self._df.columns:
-                        self._df = self._df.rename(columns={"concept_idx": "concept_id"})
-                print(f"Loaded {len(self._df)} concept labels from {p}")
+        if concepts_path is None:
+            env = os.environ.get("STEERLING_CONCEPTS_PATH")
+            if env:
+                concepts_path = env
             else:
-                print(f"Concept file not found at {p} — using fallback labels")
-                self._df = pd.DataFrame(columns=pd.Index(["concept_id", "head", "concept_name"]))
+                try:
+                    from huggingface_hub import hf_hub_download
+
+                    concepts_path = hf_hub_download("guidelabs/steerling", "concept_labels.parquet")
+                except Exception:
+                    pass  # fall through to empty DataFrame
+
+        if concepts_path is None:
+            self._df = pd.DataFrame(columns=pd.Index(["concept_id", "head", "concept_name"]))
+        elif (p := Path(concepts_path)).exists():
+            if p.suffix == ".parquet":
+                self._df = pd.read_parquet(p)
+            else:
+                self._df = pd.read_csv(p)
+                # Legacy CSV uses concept_idx; normalize to concept_id
+                if "concept_idx" in self._df.columns and "concept_id" not in self._df.columns:
+                    self._df = self._df.rename(columns={"concept_idx": "concept_id"})
+            print(f"Loaded {len(self._df)} concept labels from {p}")
         else:
+            print(f"Concept file not found at {p} — using fallback labels")
             self._df = pd.DataFrame(columns=pd.Index(["concept_id", "head", "concept_name"]))
 
         # Build lookup dicts for fast access
