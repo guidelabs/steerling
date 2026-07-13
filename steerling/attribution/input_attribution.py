@@ -219,7 +219,7 @@ class PositionType(StrEnum):
 class CommitGroup:
     """Tokens committed together in one step_callback invocation."""
 
-    order: int
+    commit_order: int
     positions: Tensor  # [P]
     token_ids: Tensor  # [P]
     gen_logits: Tensor  # [P] generation-time logit of each committed token
@@ -246,7 +246,7 @@ class DiffusionTrace:
 
     def __post_init__(self) -> None:
         # Validate: orders must be contiguous from 0
-        orders = sorted(g.order for g in self.groups)
+        orders = sorted(g.commit_order for g in self.groups)
         if orders and orders != list(range(len(orders))):
             raise ValueError(f"CommitGroup orders must be contiguous from 0, got {orders}")
 
@@ -274,7 +274,7 @@ class DiffusionTrace:
         order_at[: self.prompt_len] = -1
         token_at = self._base.clone()
         for g in self.groups:
-            order_at[g.positions] = g.order
+            order_at[g.positions] = g.commit_order
             token_at[g.positions] = g.token_ids
         return order_at, token_at
 
@@ -324,7 +324,7 @@ class _TraceRecorder:
             tok = torch.tensor(tok_list, dtype=torch.long, device=device)
             gen_logits = torch.tensor(gen_list, device=device)
         self.groups.append(
-            CommitGroup(order=self._order, positions=pos, token_ids=tok, gen_logits=gen_logits)
+            CommitGroup(commit_order=self._order, positions=pos, token_ids=tok, gen_logits=gen_logits)
         )
         self._order += 1
 
@@ -589,10 +589,10 @@ class FaithfulOutputToInputAttributor:
         gen_logits: list[Tensor] = []
 
         for group in trace.groups:
-            x = trace.reconstruct(group.order)  # [T]
+            x = trace.reconstruct(group.commit_order)  # [T]
             chunk = self._ig_group(x, group.positions, group.token_ids, baseline, n_steps)  # [P, T]
             attr_chunks.append(chunk)
-            orders.append(torch.full_like(group.positions, group.order))
+            orders.append(torch.full_like(group.positions, group.commit_order))
             positions.append(group.positions)
             tokens.append(group.token_ids)
             gen_logits.append(group.gen_logits)

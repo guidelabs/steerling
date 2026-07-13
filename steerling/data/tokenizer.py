@@ -59,11 +59,13 @@ class SteerlingTokenizer:
             self._end_header_id = base_vocab + 5  # 100282
             self._eot_id = base_vocab + 6  # 100283
             self._vocab_size = base_vocab + 7  # 100284
-            special_tokens.update({
-                "<|start_header_id|>": self._start_header_id,
-                "<|end_header_id|>": self._end_header_id,
-                "<|eot_id|>": self._eot_id,
-            })
+            special_tokens.update(
+                {
+                    "<|start_header_id|>": self._start_header_id,
+                    "<|end_header_id|>": self._end_header_id,
+                    "<|eot_id|>": self._eot_id,
+                }
+            )
         else:
             self._start_header_id = None
             self._end_header_id = None
@@ -86,11 +88,13 @@ class SteerlingTokenizer:
             self._mask_token_id,
         }
         if instruct:
-            self._special_token_ids.update({
-                self._start_header_id,
-                self._end_header_id,
-                self._eot_id,
-            })
+            self._special_token_ids.update(
+                {
+                    self._start_header_id,
+                    self._end_header_id,
+                    self._eot_id,
+                }
+            )
 
     def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         """

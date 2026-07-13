@@ -40,7 +40,7 @@ class CommitEvent:
     since generation is single-prompt (B=1).
 
     Attributes:
-        step: Denoising iteration index.
+        denoising_step: Denoising iteration index.
         positions: [P] sequence positions committed this step.
         token_ids: [P] chosen token IDs.
         target_logits: [P] model's logit for the chosen token.
@@ -50,7 +50,7 @@ class CommitEvent:
         unk_logits: [P, K_unk] pre-sigmoid logits for unknown concepts, or None.
     """
 
-    step: int
+    denoising_step: int
     positions: Tensor
     token_ids: Tensor
     target_logits: Tensor
@@ -86,7 +86,9 @@ def _compute_unknown_topk(
         return None, None
 
     _, indices, logits = unknown_head.linear_features_topk_factorized(
-        hidden, k=k, block_size=unknown_head.block_size,
+        hidden,
+        k=k,
+        block_size=unknown_head.block_size,
     )
 
     return indices, logits  # [1, P, k], [1, P, k]
@@ -195,26 +197,34 @@ class OutputToConceptAttribution:
                 eps = float(self.epsilon_contribution[b, t])
 
                 for ki in range(k_known):
-                    rows.append({
-                        "batch": b, "position": t,
-                        "target_token_id": target_id, "target_logit": target_logit,
-                        "concept_type": "known",
-                        "concept_id": int(self.known_indices[b, t, ki]),
-                        "weight": float(self.known_weights[b, t, ki]),
-                        "contribution": float(self.known_contributions[b, t, ki]),
-                        "epsilon": eps,
-                    })
+                    rows.append(
+                        {
+                            "batch": b,
+                            "position": t,
+                            "target_token_id": target_id,
+                            "target_logit": target_logit,
+                            "concept_type": "known",
+                            "concept_id": int(self.known_indices[b, t, ki]),
+                            "weight": float(self.known_weights[b, t, ki]),
+                            "contribution": float(self.known_contributions[b, t, ki]),
+                            "epsilon": eps,
+                        }
+                    )
 
                 for ui in range(k_unk):
-                    rows.append({
-                        "batch": b, "position": t,
-                        "target_token_id": target_id, "target_logit": target_logit,
-                        "concept_type": "discovered",
-                        "concept_id": int(self.unk_indices[b, t, ui]),
-                        "weight": float(self.unk_weights[b, t, ui]),
-                        "contribution": float(self.unk_contributions[b, t, ui]),
-                        "epsilon": eps,
-                    })
+                    rows.append(
+                        {
+                            "batch": b,
+                            "position": t,
+                            "target_token_id": target_id,
+                            "target_logit": target_logit,
+                            "concept_type": "discovered",
+                            "concept_id": int(self.unk_indices[b, t, ui]),
+                            "weight": float(self.unk_weights[b, t, ui]),
+                            "contribution": float(self.unk_contributions[b, t, ui]),
+                            "epsilon": eps,
+                        }
+                    )
 
         return pd.DataFrame(rows)
 
@@ -277,7 +287,7 @@ class AttributionAccumulator:
 
         # Tracking
         self.committed = torch.zeros(seq_len, dtype=torch.bool, device=device)
-        self.commit_step = torch.full((seq_len,), -2, dtype=torch.long, device=device)
+        self.commit_denoising_step = torch.full((seq_len,), -2, dtype=torch.long, device=device)
 
     @torch.no_grad()
     def commit(self, event: CommitEvent) -> None:
@@ -337,7 +347,7 @@ class AttributionAccumulator:
         self.residual_contribution[0, pos] = residual
 
         self.committed[pos] = True
-        self.commit_step[pos] = event.step
+        self.commit_denoising_step[pos] = event.denoising_step
 
     def result(self) -> OutputToConceptAttribution:
         """Build final attribution from accumulated commits."""
@@ -368,8 +378,8 @@ class AttributionAccumulator:
 
     @property
     def commit_order(self) -> Tensor:
-        """[T] tensor of commit steps for analyzing generation order."""
-        return self.commit_step
+        """[T] tensor of denoising steps for analyzing generation order."""
+        return self.commit_denoising_step
 
 
 AttributionResult = OutputToConceptAttribution
@@ -602,9 +612,7 @@ class FaithfulConceptAttributor:
             unk_head = getattr(self.backbone, "unknown_head", None)
             unknown_topk = getattr(unk_head, "topk", 64) or 64
         self.unknown_topk = unknown_topk
-        self._num_known_concepts = getattr(
-            getattr(self.backbone, "known_head", None), "n_concepts", 0
-        )
+        self._num_known_concepts = getattr(getattr(self.backbone, "known_head", None), "n_concepts", 0)
         self.last_attribution: OutputToConceptAttribution | None = None
 
     @torch.no_grad()
@@ -662,9 +670,7 @@ class FaithfulConceptAttributor:
             tids = info.committed_token_ids  # [P]
 
             # Target logits from this forward pass
-            target_lgt = info.logits[0, pos].gather(
-                -1, tids.unsqueeze(-1)
-            ).squeeze(-1)
+            target_lgt = info.logits[0, pos].gather(-1, tids.unsqueeze(-1)).squeeze(-1)
 
             # Known: extract top-k from outputs (sparse path)
             k_idx = info.outputs.known_topk_indices[0, pos]  # [P, K]
@@ -673,12 +679,14 @@ class FaithfulConceptAttributor:
             # Unknown: compute from hidden for committed positions only
             hidden_p = info.outputs.hidden[:, pos, :]  # [1, P, D]
             u_idx, u_lgt = _compute_unknown_topk(
-                unknown_head_ref, hidden_p, k=unk_topk,
+                unknown_head_ref,
+                hidden_p,
+                k=unk_topk,
             )
 
             accumulator.commit(
                 CommitEvent(
-                    step=info.step,
+                    denoising_step=info.step,
                     positions=pos,
                     token_ids=tids,
                     target_logits=target_lgt,
@@ -710,7 +718,10 @@ class FaithfulConceptAttributor:
         results = []
         for start, end in chunks:
             entries, eps_pct = chunk_attribution(
-                attr, start, end, batch=batch,
+                attr,
+                start,
+                end,
+                batch=batch,
                 concept_labels=self.labels,
                 num_known_concepts=self._num_known_concepts,
             )

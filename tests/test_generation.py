@@ -11,7 +11,9 @@ class TestTopKConcepts:
     def test_known_topk_shape_matches_config(self, tiny_config, tiny_concept_config, tokenizer, device):
         """When apply_topk is True, known topk_indices last dim equals k_features."""
         model = InterpretableCausalDiffusionLM(
-            tiny_config, tiny_concept_config, vocab_size=tokenizer.vocab_size,
+            tiny_config,
+            tiny_concept_config,
+            vocab_size=tokenizer.vocab_size,
         ).to(device)
         model.eval()
 
@@ -34,7 +36,9 @@ class TestTopKConcepts:
     def test_known_topk_indices_in_range(self, tiny_config, tiny_concept_config, tokenizer, device):
         """Known top-k indices must be valid concept IDs (< n_concepts)."""
         model = InterpretableCausalDiffusionLM(
-            tiny_config, tiny_concept_config, vocab_size=tokenizer.vocab_size,
+            tiny_config,
+            tiny_concept_config,
+            vocab_size=tokenizer.vocab_size,
         ).to(device)
         model.eval()
 
@@ -51,7 +55,9 @@ class TestTopKConcepts:
         """When apply_topk_to_unknown is True, unknown topk_indices has correct shape."""
         assert tiny_concept_config.apply_topk_to_unknown is True
         model = InterpretableCausalDiffusionLM(
-            tiny_config, tiny_concept_config, vocab_size=tokenizer.vocab_size,
+            tiny_config,
+            tiny_concept_config,
+            vocab_size=tokenizer.vocab_size,
         ).to(device)
         model.eval()
 
@@ -69,7 +75,9 @@ class TestTopKConcepts:
     def test_unknown_topk_indices_in_range(self, tiny_config, tiny_concept_config, tokenizer, device):
         """Unknown top-k indices must be valid concept IDs (< n_unknown_concepts)."""
         model = InterpretableCausalDiffusionLM(
-            tiny_config, tiny_concept_config, vocab_size=tokenizer.vocab_size,
+            tiny_config,
+            tiny_concept_config,
+            vocab_size=tokenizer.vocab_size,
         ).to(device)
         model.eval()
 
@@ -83,10 +91,14 @@ class TestTopKConcepts:
             assert outputs.unknown_topk_indices.max() < tiny_concept_config.n_unknown_concepts
             assert outputs.unknown_topk_indices.min() >= 0
 
-    def test_topk_features_k_concepts_go_into_lm_head(self, tiny_config, tiny_concept_config, tokenizer, device):
+    def test_topk_features_k_concepts_go_into_lm_head(
+        self, tiny_config, tiny_concept_config, tokenizer, device
+    ):
         """Out of n_concepts, only topk_known_features have non-zero weight in features."""
         model = InterpretableCausalDiffusionLM(
-            tiny_config, tiny_concept_config, vocab_size=tokenizer.vocab_size,
+            tiny_config,
+            tiny_concept_config,
+            vocab_size=tokenizer.vocab_size,
         ).to(device)
         model.eval()
 
@@ -113,6 +125,7 @@ class TestTopKConcepts:
         weights_sparse = head.topk_with_cutoff(weights_all)
         nonzero_per_pos = (weights_sparse > 0.0).sum(-1).float()
 
-        assert nonzero_per_pos.max().item() <= k_features, \
+        assert nonzero_per_pos.max().item() <= k_features, (
             f"Expected at most {k_features} non-zero weights, got {int(nonzero_per_pos.max())}"
+        )
         assert nonzero_per_pos.min().item() > 0, "Should have at least 1 non-zero weight"

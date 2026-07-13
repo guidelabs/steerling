@@ -1185,8 +1185,8 @@ class ConceptHead(nn.Module):
             return weights
 
         weights = torch.sigmoid(concept_logits).to(E.dtype)
-                                                                                                                                                                                                                 
-        if apply_topk and not self.topk_on_logits:                                                                                                                                                                       
+
+        if apply_topk and not self.topk_on_logits:
             weights = self.topk_with_cutoff(weights)
 
         return weights

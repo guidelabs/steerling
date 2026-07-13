@@ -97,23 +97,30 @@ class TestAttributionMath:
 
         # Our accumulator does the same with batch dims
         accumulator = AttributionAccumulator(
-            seq_len=10, k_known=k, k_unk=0, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=10,
+            k_known=k,
+            k_unk=0,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
         )
-        accumulator.commit(CommitEvent(
-            step=0,
-            positions=torch.tensor([0], device=device),
-            token_ids=torch.tensor([token_id], device=device),
-            target_logits=torch.tensor([0.0], device=device),  # doesn't affect contrib
-            known_indices=indices.unsqueeze(0),  # [1, K]
-            known_logits=logits.unsqueeze(0),  # [1, K]
-            unk_indices=None,
-            unk_logits=None,
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=0,
+                positions=torch.tensor([0], device=device),
+                token_ids=torch.tensor([token_id], device=device),
+                target_logits=torch.tensor([0.0], device=device),  # doesn't affect contrib
+                known_indices=indices.unsqueeze(0),  # [1, K]
+                known_logits=logits.unsqueeze(0),  # [1, K]
+                unk_indices=None,
+                unk_logits=None,
+            )
+        )
 
         actual = accumulator.known_contributions[0, 0]  # [K]
-        assert torch.allclose(actual, expected, atol=1e-6), \
+        assert torch.allclose(actual, expected, atol=1e-6), (
             f"Known contributions don't match:\n  expected={expected}\n  actual={actual}"
+        )
 
     def test_unknown_contribution_formula(self, setup, device):
         """Unknown contribution uses same formula as known."""
@@ -132,20 +139,26 @@ class TestAttributionMath:
         expected = u_w * u_dots
 
         accumulator = AttributionAccumulator(
-            seq_len=10, k_known=2, k_unk=k_unk, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=10,
+            k_known=2,
+            k_unk=k_unk,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
             unknown_head=unknown_head,
         )
-        accumulator.commit(CommitEvent(
-            step=0,
-            positions=torch.tensor([0], device=device),
-            token_ids=torch.tensor([token_id], device=device),
-            target_logits=torch.tensor([0.0], device=device),
-            known_indices=torch.zeros(1, 2, dtype=torch.long, device=device),
-            known_logits=torch.zeros(1, 2, device=device),
-            unk_indices=u_indices.unsqueeze(0),
-            unk_logits=u_logits.unsqueeze(0),
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=0,
+                positions=torch.tensor([0], device=device),
+                token_ids=torch.tensor([token_id], device=device),
+                target_logits=torch.tensor([0.0], device=device),
+                known_indices=torch.zeros(1, 2, dtype=torch.long, device=device),
+                known_logits=torch.zeros(1, 2, device=device),
+                unk_indices=u_indices.unsqueeze(0),
+                unk_logits=u_logits.unsqueeze(0),
+            )
+        )
 
         actual = accumulator.unk_contributions[0, 0]  # [K_unk]
         assert torch.allclose(actual, expected, atol=1e-6)
@@ -166,28 +179,35 @@ class TestAttributionMath:
         target_logit = torch.tensor([42.0], device=device)
 
         accumulator = AttributionAccumulator(
-            seq_len=10, k_known=k_known, k_unk=k_unk, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=10,
+            k_known=k_known,
+            k_unk=k_unk,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
             unknown_head=unknown_head,
         )
-        accumulator.commit(CommitEvent(
-            step=0,
-            positions=torch.tensor([0], device=device),
-            token_ids=torch.tensor([token_id], device=device),
-            target_logits=target_logit,
-            known_indices=k_indices.unsqueeze(0),
-            known_logits=k_logits.unsqueeze(0),
-            unk_indices=u_indices.unsqueeze(0),
-            unk_logits=u_logits.unsqueeze(0),
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=0,
+                positions=torch.tensor([0], device=device),
+                token_ids=torch.tensor([token_id], device=device),
+                target_logits=target_logit,
+                known_indices=k_indices.unsqueeze(0),
+                known_logits=k_logits.unsqueeze(0),
+                unk_indices=u_indices.unsqueeze(0),
+                unk_logits=u_logits.unsqueeze(0),
+            )
+        )
 
         k_sum = accumulator.known_contributions[0, 0].sum()
         u_sum = accumulator.unk_contributions[0, 0].sum()
         residual = accumulator.residual_contribution[0, 0]
 
         reconstructed = k_sum + u_sum + residual
-        assert torch.allclose(reconstructed, target_logit, atol=1e-5), \
+        assert torch.allclose(reconstructed, target_logit, atol=1e-5), (
             f"Residual check failed: {k_sum} + {u_sum} + {residual} = {reconstructed} != {target_logit}"
+        )
 
     def test_float32_precision(self, setup, device):
         """Attribution math is done in float32 even with bfloat16 inputs."""
@@ -197,19 +217,25 @@ class TestAttributionMath:
         bf16_logits = torch.tensor([1.0, -0.5], device=device).bfloat16()
 
         accumulator = AttributionAccumulator(
-            seq_len=10, k_known=2, k_unk=0, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=10,
+            k_known=2,
+            k_unk=0,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
         )
-        accumulator.commit(CommitEvent(
-            step=0,
-            positions=torch.tensor([0], device=device),
-            token_ids=torch.tensor([1], device=device),
-            target_logits=torch.tensor([1.0], device=device),
-            known_indices=torch.tensor([[0, 1]], device=device),
-            known_logits=bf16_logits.unsqueeze(0),
-            unk_indices=None,
-            unk_logits=None,
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=0,
+                positions=torch.tensor([0], device=device),
+                token_ids=torch.tensor([1], device=device),
+                target_logits=torch.tensor([1.0], device=device),
+                known_indices=torch.tensor([[0, 1]], device=device),
+                known_logits=bf16_logits.unsqueeze(0),
+                unk_indices=None,
+                unk_logits=None,
+            )
+        )
 
         # Contributions should be float32
         assert accumulator.known_contributions.dtype == torch.float32
@@ -229,33 +255,41 @@ class TestAccumulator:
         k = 4
 
         accumulator = AttributionAccumulator(
-            seq_len=10, k_known=k, k_unk=0, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=10,
+            k_known=k,
+            k_unk=0,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
         )
 
         # Commit positions 0, 1
-        accumulator.commit(CommitEvent(
-            step=0,
-            positions=torch.tensor([0, 1], device=device),
-            token_ids=torch.tensor([5, 6], device=device),
-            target_logits=torch.tensor([1.0, 2.0], device=device),
-            known_indices=torch.arange(k, device=device).unsqueeze(0).expand(2, k),
-            known_logits=torch.randn(2, k, device=device),
-            unk_indices=None,
-            unk_logits=None,
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=0,
+                positions=torch.tensor([0, 1], device=device),
+                token_ids=torch.tensor([5, 6], device=device),
+                target_logits=torch.tensor([1.0, 2.0], device=device),
+                known_indices=torch.arange(k, device=device).unsqueeze(0).expand(2, k),
+                known_logits=torch.randn(2, k, device=device),
+                unk_indices=None,
+                unk_logits=None,
+            )
+        )
 
         # Commit position 5
-        accumulator.commit(CommitEvent(
-            step=1,
-            positions=torch.tensor([5], device=device),
-            token_ids=torch.tensor([7], device=device),
-            target_logits=torch.tensor([3.0], device=device),
-            known_indices=torch.arange(k, device=device).unsqueeze(0),
-            known_logits=torch.randn(1, k, device=device),
-            unk_indices=None,
-            unk_logits=None,
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=1,
+                positions=torch.tensor([5], device=device),
+                token_ids=torch.tensor([7], device=device),
+                target_logits=torch.tensor([3.0], device=device),
+                known_indices=torch.arange(k, device=device).unsqueeze(0),
+                known_logits=torch.randn(1, k, device=device),
+                unk_indices=None,
+                unk_logits=None,
+            )
+        )
 
         # Positions 0, 1, 5 should have non-zero contributions
         assert accumulator.known_contributions[0, 0].abs().sum() > 0
@@ -270,8 +304,12 @@ class TestAccumulator:
         known_head, _, lm_head_weight, _ = setup
 
         accumulator = AttributionAccumulator(
-            seq_len=5, k_known=2, k_unk=0, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=5,
+            k_known=2,
+            k_unk=0,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
         )
 
         result = accumulator.result()
@@ -289,47 +327,60 @@ class TestAccumulator:
         k = 2
 
         accumulator = AttributionAccumulator(
-            seq_len=5, k_known=k, k_unk=0, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=5,
+            k_known=k,
+            k_unk=0,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
         )
 
         assert accumulator.coverage == 0.0
 
-        accumulator.commit(CommitEvent(
-            step=0,
-            positions=torch.tensor([1, 3], device=device),
-            token_ids=torch.tensor([5, 6], device=device),
-            target_logits=torch.tensor([1.0, 2.0], device=device),
-            known_indices=torch.arange(k, device=device).unsqueeze(0).expand(2, k),
-            known_logits=torch.randn(2, k, device=device),
-            unk_indices=None, unk_logits=None,
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=0,
+                positions=torch.tensor([1, 3], device=device),
+                token_ids=torch.tensor([5, 6], device=device),
+                target_logits=torch.tensor([1.0, 2.0], device=device),
+                known_indices=torch.arange(k, device=device).unsqueeze(0).expand(2, k),
+                known_logits=torch.randn(2, k, device=device),
+                unk_indices=None,
+                unk_logits=None,
+            )
+        )
 
         assert accumulator.coverage == pytest.approx(2 / 5)
         assert accumulator.committed[1] and accumulator.committed[3]
         assert not accumulator.committed[0]
-        assert accumulator.commit_step[1] == 0
-        assert accumulator.commit_step[3] == 0
-        assert accumulator.commit_step[0] == -2
+        assert accumulator.commit_denoising_step[1] == 0
+        assert accumulator.commit_denoising_step[3] == 0
+        assert accumulator.commit_denoising_step[0] == -2
 
     def test_empty_commit(self, setup, device):
         """Committing zero positions is a no-op."""
         known_head, _, lm_head_weight, _ = setup
 
         accumulator = AttributionAccumulator(
-            seq_len=5, k_known=2, k_unk=0, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=5,
+            k_known=2,
+            k_unk=0,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
         )
-        accumulator.commit(CommitEvent(
-            step=0,
-            positions=torch.tensor([], dtype=torch.long, device=device),
-            token_ids=torch.tensor([], dtype=torch.long, device=device),
-            target_logits=torch.tensor([], device=device),
-            known_indices=torch.zeros(0, 2, dtype=torch.long, device=device),
-            known_logits=torch.zeros(0, 2, device=device),
-            unk_indices=None,
-            unk_logits=None,
-        ))
+        accumulator.commit(
+            CommitEvent(
+                denoising_step=0,
+                positions=torch.tensor([], dtype=torch.long, device=device),
+                token_ids=torch.tensor([], dtype=torch.long, device=device),
+                target_logits=torch.tensor([], device=device),
+                known_indices=torch.zeros(0, 2, dtype=torch.long, device=device),
+                known_logits=torch.zeros(0, 2, device=device),
+                unk_indices=None,
+                unk_logits=None,
+            )
+        )
 
         assert accumulator.known_contributions.abs().sum() == 0
 
@@ -403,7 +454,10 @@ class TestChunkAttribution:
         )
 
         entries, _ = chunk_attribution(
-            result, 0, 1, batch=0,
+            result,
+            0,
+            1,
+            batch=0,
             concept_labels=labels,
             num_known_concepts=1000,
         )
@@ -488,7 +542,9 @@ class TestOutputToConceptAttribution:
             target_logits=torch.tensor([[10.0, 20.0, 30.0]], device=device),
             known_indices=torch.tensor([[[0, 1, 2], [3, 4, 5], [6, 7, 8]]], device=device),
             known_weights=torch.tensor([[[0.9, 0.5, 0.1], [0.8, 0.4, 0.2], [0.7, 0.3, 0.6]]], device=device),
-            known_contributions=torch.tensor([[[5.0, 3.0, 1.0], [8.0, 6.0, 2.0], [10.0, 4.0, 7.0]]], device=device),
+            known_contributions=torch.tensor(
+                [[[5.0, 3.0, 1.0], [8.0, 6.0, 2.0], [10.0, 4.0, 7.0]]], device=device
+            ),
             unk_indices=torch.tensor([[[0, 1], [2, 3], [4, 5]]], device=device),
             unk_weights=torch.tensor([[[0.6, 0.3], [0.5, 0.2], [0.4, 0.1]]], device=device),
             unk_contributions=torch.tensor([[[0.5, 0.3], [1.5, 1.0], [3.0, 2.0]]], device=device),
@@ -537,8 +593,17 @@ class TestOutputToConceptAttribution:
         attr = self._make_attr(device)
         df = attr.to_dataframe()
 
-        expected_cols = {"batch", "position", "target_token_id", "target_logit",
-                         "concept_type", "concept_id", "weight", "contribution", "epsilon"}
+        expected_cols = {
+            "batch",
+            "position",
+            "target_token_id",
+            "target_logit",
+            "concept_type",
+            "concept_id",
+            "weight",
+            "contribution",
+            "epsilon",
+        }
         assert expected_cols == set(df.columns)
 
         # 3 positions × (3 known + 2 unknown) = 15 rows
@@ -559,8 +624,12 @@ class TestOutputToConceptAttribution:
         lm_head_weight = torch.randn(vocab, dim, device=device)
 
         accumulator = AttributionAccumulator(
-            seq_len=seq_len, k_known=k_known, k_unk=k_unk, device=device,
-            lm_head_weight=lm_head_weight, known_head=known_head,
+            seq_len=seq_len,
+            k_known=k_known,
+            k_unk=k_unk,
+            device=device,
+            lm_head_weight=lm_head_weight,
+            known_head=known_head,
             unknown_head=unknown_head,
         )
 
@@ -570,16 +639,18 @@ class TestOutputToConceptAttribution:
         prompt_len = 2
 
         for pos in range(seq_len):
-            accumulator.commit(CommitEvent(
-                step=pos,
-                positions=torch.tensor([pos], device=device),
-                token_ids=torch.tensor([token_ids[pos]], device=device),
-                target_logits=torch.tensor([float(pos)], device=device),
-                known_indices=torch.arange(k_known, device=device).unsqueeze(0),
-                known_logits=torch.randn(1, k_known, device=device),
-                unk_indices=torch.arange(k_unk, device=device).unsqueeze(0),
-                unk_logits=torch.randn(1, k_unk, device=device),
-            ))
+            accumulator.commit(
+                CommitEvent(
+                    denoising_step=pos,
+                    positions=torch.tensor([pos], device=device),
+                    token_ids=torch.tensor([token_ids[pos]], device=device),
+                    target_logits=torch.tensor([float(pos)], device=device),
+                    known_indices=torch.arange(k_known, device=device).unsqueeze(0),
+                    known_logits=torch.randn(1, k_known, device=device),
+                    unk_indices=torch.arange(k_unk, device=device).unsqueeze(0),
+                    unk_logits=torch.randn(1, k_unk, device=device),
+                )
+            )
 
         assert accumulator.coverage == 1.0
 
@@ -588,8 +659,10 @@ class TestOutputToConceptAttribution:
 
         # Find chunks (skip prompt)
         chunks = find_chunk_boundaries(
-            token_ids, eoc_id=eoc_id,
-            start_index=prompt_len, include_final_chunk=True,
+            token_ids,
+            eoc_id=eoc_id,
+            start_index=prompt_len,
+            include_final_chunk=True,
         )
 
         # Expected: [2,4), [5,8), [9,10)

@@ -40,13 +40,13 @@ def _make_trace(device, mask_id: int = 99) -> DiffusionTrace:
     """Synthetic trace: prompt len 2, 4 generated slots, position 5 never committed."""
     groups = [
         CommitGroup(
-            order=0,
+            commit_order=0,
             positions=torch.tensor([2, 3], device=device),
             token_ids=torch.tensor([20, 21], device=device),
             gen_logits=torch.tensor([1.0, 1.0], device=device),
         ),
         CommitGroup(
-            order=1,
+            commit_order=1,
             positions=torch.tensor([4], device=device),
             token_ids=torch.tensor([22], device=device),
             gen_logits=torch.tensor([1.0], device=device),
@@ -116,7 +116,7 @@ class TestDiffusionTrace:
                 committed_token_ids=torch.tensor([22], device=device),
             )
         )
-        assert [g.order for g in recorder.groups] == [0, 1]
+        assert [g.commit_order for g in recorder.groups] == [0, 1]
         assert recorder.groups[0].positions.tolist() == [2, 3]
         # gen_logits gathered from the committed tokens
         assert recorder.groups[1].gen_logits.shape == (1,)
@@ -292,9 +292,9 @@ class TestCriticalFeatureAttribution:
         attr_sum = float(attr.attributions[n].sum())
 
         # signed sum should track the signed gap (loose tolerance: random weights, 64 steps)
-        assert (
-            abs(attr_sum - gap) <= abs(gap) + 1.0
-        ), f"completeness far off: sum(attr)={attr_sum:.3f} gap={gap:.3f}"
+        assert abs(attr_sum - gap) <= abs(gap) + 1.0, (
+            f"completeness far off: sum(attr)={attr_sum:.3f} gap={gap:.3f}"
+        )
         # and it must have the same sign as the gap when the gap is not tiny
         if abs(gap) > 1.0:
             assert (attr_sum > 0) == (gap > 0), (
