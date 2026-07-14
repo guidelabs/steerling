@@ -1,8 +1,8 @@
-"""Shared helpers for input feature attribution."""
+"""Shared helpers for attribution."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import torch
@@ -71,28 +71,6 @@ def get_baseline_embedding(
     return emb.squeeze(0).detach()
 
 
-# def _backbone_forward_fn(backbone: Any) -> Callable[[Tensor, Tensor], tuple[Tensor, Any]]:
-#     """
-#     Build the forward used by IG.
-
-#     Interpretable backbones return (logits, outputs). Plain backbones return hidden,
-#     to which we apply lm_head, with outputs = None. The interpolated embeddings are
-#     injected via input_embeds; there is no teacher forcing at inference.
-#     """
-#     if hasattr(backbone, "known_head"):
-
-#         def forward_fn(input_ids: Tensor, interp: Tensor) -> tuple[Tensor, Any]:
-#             return backbone(input_ids=input_ids, input_embeds=interp, minimal_output=False)
-
-#     else:
-
-#         def forward_fn(input_ids: Tensor, interp: Tensor) -> tuple[Tensor, Any]:
-#             hidden = backbone.transformer(input_ids=input_ids, input_embeds=interp, return_hidden=True)
-#             return backbone.transformer.lm_head(hidden), None
-
-#     return forward_fn
-
-
 def _backbone_forward_fn(backbone: Any) -> Callable[[Tensor, Tensor], tuple[Tensor, Any]]:
     """IG forward: transformer hidden -> lm_head. Clean end-to-end gradient.
     Equals the model's output when epsilon correction reconstructs hidden (matches scalex),
@@ -146,3 +124,63 @@ def integrated_gradients(
         grad_accum.add_(grads)
 
     return (delta.float() * grad_accum / n_steps).sum(dim=-1)
+
+
+def find_chunk_boundaries(
+    token_ids: list[int],
+    eoc_id: int,
+    *,
+    start_index: int = 0,
+    stop_ids: Iterable[int] | None = None,
+    include_final_chunk: bool = False,
+) -> list[tuple[int, int]]:
+    """Split ``token_ids`` into chunks at EOC and stop-token boundaries.
+
+    Each returned ``(start, end)`` pair is a half-open interval ``[start, end)``
+    into ``token_ids``. Indices are absolute (already offset by
+    ``start_index``). The boundary token at ``end``, i.e. an EOC or a stop
+    token, is NOT included in the chunk.
+
+    Args:
+        token_ids: Full list of token IDs (prompt + generation).
+        eoc_id: End-of-chunk token ID. Splits chunks; excluded from every span.
+        start_index: Index to begin scanning from. Tokens before this index are
+            ignored (e.g. to skip the prompt). Defaults to 0.
+        stop_ids: Token IDs (e.g. EOS, EOT) that terminate chunking. The chunk
+            closed by the first stop token is emitted (if non-empty); the stop
+            token and everything after it are excluded. If None, no stop
+            handling is applied.
+        include_final_chunk: If True, also emit the trailing span after the last
+            EOC when it is *not* terminated by an EOC or stop token (i.e. an
+            incomplete final chunk). Empty trailing spans are never emitted.
+            Defaults to False.
+
+    Returns:
+        List of ``(start, end)`` index pairs, one per chunk, in order.
+    """
+    stops = frozenset(stop_ids) if stop_ids is not None else frozenset()
+
+    # Find the effective end (first stop token or end of list)
+    hit_stop = False
+    end = len(token_ids)
+    for i in range(start_index, end):
+        if token_ids[i] in stops:
+            end = i
+            hit_stop = True
+            break
+
+    # Collect all EOC positions in [start_index, end)
+    boundaries = [i for i in range(start_index, end) if token_ids[i] == eoc_id]
+
+    # Build chunks from boundaries
+    chunks: list[tuple[int, int]] = []
+    prev = start_index
+    for b in boundaries:
+        chunks.append((prev, b))
+        prev = b + 1
+
+    # Emit trailing chunk if closed by a stop token, or if include_final_chunk
+    if prev < end and (hit_stop or include_final_chunk):
+        chunks.append((prev, end))
+
+    return chunks

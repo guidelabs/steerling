@@ -26,12 +26,12 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import Tensor
 
+from steerling.attribution.trace import CommitRecord, DiffusionTrace, PositionType
 from steerling.attribution.utils import (
     get_baseline_embedding,
     integrated_gradients,
@@ -204,104 +204,12 @@ class OutputToInputAttributor:
 # Diffusion replay: trace + faithful generation-level attributor.
 # --------------------------------------------------------------------------- #
 
-_NEVER_COMMITTED = torch.iinfo(torch.long).max
-
-
-class PositionType(StrEnum):
-    """Role of an input position in a reconstructed snapshot."""
-
-    PROMPT = "prompt"
-    GENERATED = "generated"  # committed during generation
-    GENERATED_MASKED = "generated_masked"  # generation region, never committed
-
-
-@dataclass(frozen=True)
-class CommitGroup:
-    """Tokens committed together in one step_callback invocation."""
-
-    commit_order: int
-    positions: Tensor  # [P]
-    token_ids: Tensor  # [P]
-    gen_logits: Tensor  # [P] generation-time logit of each committed token
-
-
-@dataclass(frozen=True)
-class DiffusionTrace:
-    """
-    Replayable record of one generation: the commit schedule needed to
-    reconstruct the input the model saw at every step.
-
-    The open generator builds ``x`` as prompt + all-masked generation region with
-    no padding and no EOS tail, so ``padded_seq_length == seq_length`` and there is
-    no EOS-pad region.
-    """
-
-    prompt_ids: Tensor
-    prompt_len: int
-    seq_length: int
-    mask_id: int
-    eos_id: int | None
-    device: torch.device
-    groups: list[CommitGroup]
-
-    def __post_init__(self) -> None:
-        # Validate: orders must be contiguous from 0
-        orders = sorted(g.commit_order for g in self.groups)
-        if orders and orders != list(range(len(orders))):
-            raise ValueError(f"CommitGroup orders must be contiguous from 0, got {orders}")
-
-        # Validate: no position committed twice
-        all_positions: list[int] = []
-        for g in self.groups:
-            all_positions.extend(g.positions.tolist())
-        if len(all_positions) != len(set(all_positions)):
-            raise ValueError("A position was committed more than once")
-
-        object.__setattr__(self, "padded_seq_length", self.seq_length)
-        object.__setattr__(self, "_base", self._build_base())
-        order_at, token_at = self._build_caches()
-        object.__setattr__(self, "_order_at", order_at)
-        object.__setattr__(self, "_token_at", token_at)
-
-    def _build_base(self) -> Tensor:
-        """prompt | masks, the sequence generate_full starts from."""
-        x = torch.full((self.seq_length,), self.mask_id, dtype=torch.long, device=self.device)
-        x[: self.prompt_len] = self.prompt_ids
-        return x
-
-    def _build_caches(self) -> tuple[Tensor, Tensor]:
-        order_at = torch.full((self.seq_length,), _NEVER_COMMITTED, dtype=torch.long, device=self.device)
-        order_at[: self.prompt_len] = -1
-        token_at = self._base.clone()
-        for g in self.groups:
-            order_at[g.positions] = g.commit_order
-            token_at[g.positions] = g.token_ids
-        return order_at, token_at
-
-    def committed_tokens(self) -> Tensor:
-        return self._token_at
-
-    def reconstruct(self, order: int) -> Tensor:
-        """The input the model saw when producing commit group ``order``."""
-        revealed = self._order_at < order
-        return torch.where(revealed, self._token_at, self._base)
-
-    def position_types(self) -> list[PositionType]:
-        order = self._order_at
-        types = [PositionType.GENERATED] * self.seq_length
-        for p in range(self.prompt_len):
-            types[p] = PositionType.PROMPT
-        for p in range(self.prompt_len, self.seq_length):
-            if int(order[p]) == _NEVER_COMMITTED:
-                types[p] = PositionType.GENERATED_MASKED
-        return types
-
 
 class _TraceRecorder:
     """step_callback that builds a DiffusionTrace live during generation."""
 
     def __init__(self) -> None:
-        self.groups: list[CommitGroup] = []
+        self.groups: list[CommitRecord] = []
         self._order = 0
 
     def __call__(self, info: GenerationStepInfo) -> None:
@@ -322,9 +230,15 @@ class _TraceRecorder:
         with torch.inference_mode(False):
             pos = torch.tensor(pos_list, dtype=torch.long, device=device)
             tok = torch.tensor(tok_list, dtype=torch.long, device=device)
-            gen_logits = torch.tensor(gen_list, device=device)
+            target_logits = torch.tensor(gen_list, device=device)
         self.groups.append(
-            CommitGroup(commit_order=self._order, positions=pos, token_ids=tok, gen_logits=gen_logits)
+            CommitRecord(
+                commit_order=self._order,
+                denoising_step=info.step,
+                positions=pos,
+                token_ids=tok,
+                target_logits=target_logits,
+            )
         )
         self._order += 1
 
@@ -342,7 +256,7 @@ class FaithfulOutputToInputAttribution:
     target_orders: Tensor  # [N]
     target_positions: Tensor  # [N]
     target_token_ids: Tensor  # [N]
-    gen_logits: Tensor  # [N]
+    target_logits: Tensor  # [N]
     attributions: Tensor  # [N, T]
 
     def _scope_positions(self, scope: str) -> Tensor:
@@ -586,7 +500,7 @@ class FaithfulOutputToInputAttributor:
         orders: list[Tensor] = []
         positions: list[Tensor] = []
         tokens: list[Tensor] = []
-        gen_logits: list[Tensor] = []
+        tgt_logits: list[Tensor] = []
 
         for group in trace.groups:
             x = trace.reconstruct(group.commit_order)  # [T]
@@ -595,7 +509,7 @@ class FaithfulOutputToInputAttributor:
             orders.append(torch.full_like(group.positions, group.commit_order))
             positions.append(group.positions)
             tokens.append(group.token_ids)
-            gen_logits.append(group.gen_logits)
+            tgt_logits.append(group.target_logits)
 
         if not attr_chunks:
             warnings.warn("Trace contains no commits; nothing to attribute.", stacklevel=2)
@@ -606,7 +520,7 @@ class FaithfulOutputToInputAttributor:
             target_orders=torch.cat(orders) if orders else empty_long,
             target_positions=torch.cat(positions) if positions else empty_long,
             target_token_ids=torch.cat(tokens) if tokens else empty_long,
-            gen_logits=torch.cat(gen_logits) if gen_logits else torch.empty(0, device=self.device),
+            target_logits=torch.cat(tgt_logits) if tgt_logits else torch.empty(0, device=self.device),
             attributions=(
                 torch.cat(attr_chunks).detach()
                 if attr_chunks
@@ -644,7 +558,7 @@ class FaithfulOutputToInputAttributor:
         return torch.tensor([ids], dtype=torch.long, device=self.device)
 
     def _build_trace(
-        self, prompt_tensor: Tensor, config: GenerationConfig, groups: list[CommitGroup]
+        self, prompt_tensor: Tensor, config: GenerationConfig, groups: list[CommitRecord]
     ) -> DiffusionTrace:
         """Recompute the sequence layout generate_full used (no padding, no EOS tail)."""
         prompt_ids = prompt_tensor[0]

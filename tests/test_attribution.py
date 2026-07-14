@@ -12,12 +12,12 @@ import pytest
 
 from steerling.attribution.concept_attribution import (
     AttributionAccumulator,
-    CommitEvent,
     ConceptLabels,
     OutputToConceptAttribution,
     chunk_attribution,
-    find_chunk_boundaries,
 )
+from steerling.attribution.trace import CommitRecord
+from steerling.attribution.utils import find_chunk_boundaries
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +105,8 @@ class TestAttributionMath:
             known_head=known_head,
         )
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=0,
                 denoising_step=0,
                 positions=torch.tensor([0], device=device),
                 token_ids=torch.tensor([token_id], device=device),
@@ -148,7 +149,8 @@ class TestAttributionMath:
             unknown_head=unknown_head,
         )
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=0,
                 denoising_step=0,
                 positions=torch.tensor([0], device=device),
                 token_ids=torch.tensor([token_id], device=device),
@@ -188,7 +190,8 @@ class TestAttributionMath:
             unknown_head=unknown_head,
         )
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=0,
                 denoising_step=0,
                 positions=torch.tensor([0], device=device),
                 token_ids=torch.tensor([token_id], device=device),
@@ -225,7 +228,8 @@ class TestAttributionMath:
             known_head=known_head,
         )
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=0,
                 denoising_step=0,
                 positions=torch.tensor([0], device=device),
                 token_ids=torch.tensor([1], device=device),
@@ -265,7 +269,8 @@ class TestAccumulator:
 
         # Commit positions 0, 1
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=0,
                 denoising_step=0,
                 positions=torch.tensor([0, 1], device=device),
                 token_ids=torch.tensor([5, 6], device=device),
@@ -279,7 +284,8 @@ class TestAccumulator:
 
         # Commit position 5
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=1,
                 denoising_step=1,
                 positions=torch.tensor([5], device=device),
                 token_ids=torch.tensor([7], device=device),
@@ -338,7 +344,8 @@ class TestAccumulator:
         assert accumulator.coverage == 0.0
 
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=0,
                 denoising_step=0,
                 positions=torch.tensor([1, 3], device=device),
                 token_ids=torch.tensor([5, 6], device=device),
@@ -370,7 +377,8 @@ class TestAccumulator:
             known_head=known_head,
         )
         accumulator.commit(
-            CommitEvent(
+            CommitRecord(
+                commit_order=0,
                 denoising_step=0,
                 positions=torch.tensor([], dtype=torch.long, device=device),
                 token_ids=torch.tensor([], dtype=torch.long, device=device),
@@ -645,7 +653,8 @@ class TestOutputToConceptAttribution:
 
         for pos in range(seq_len):
             accumulator.commit(
-                CommitEvent(
+                CommitRecord(
+                    commit_order=pos,
                     denoising_step=pos,
                     positions=torch.tensor([pos], device=device),
                     token_ids=torch.tensor([token_ids[pos]], device=device),

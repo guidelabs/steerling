@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
@@ -14,6 +13,8 @@ import torch
 from torch import Tensor
 
 from steerling import GenerationConfig, SteerlingGenerator
+from steerling.attribution.trace import CommitRecord
+from steerling.attribution.utils import find_chunk_boundaries
 from steerling.inference.causal_diffusion import GenerationOutput, GenerationStepInfo
 
 
@@ -29,35 +30,6 @@ class VerificationResult:
     def __repr__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
         return f"VerificationResult({status}, {self.details})"
-
-
-@dataclass(frozen=True)
-class CommitEvent:
-    """
-    Concept state captured at the moment tokens are committed.
-
-    All tensors are 1-D in the position dimension (no batch dim)
-    since generation is single-prompt (B=1).
-
-    Attributes:
-        denoising_step: Denoising iteration index.
-        positions: [P] sequence positions committed this step.
-        token_ids: [P] chosen token IDs.
-        target_logits: [P] model's logit for the chosen token.
-        known_indices: [P, K_known] top-k known concept indices.
-        known_logits: [P, K_known] pre-sigmoid logits for known concepts.
-        unk_indices: [P, K_unk] top-k unknown concept indices, or None.
-        unk_logits: [P, K_unk] pre-sigmoid logits for unknown concepts, or None.
-    """
-
-    denoising_step: int
-    positions: Tensor
-    token_ids: Tensor
-    target_logits: Tensor
-    known_indices: Tensor
-    known_logits: Tensor
-    unk_indices: Tensor | None
-    unk_logits: Tensor | None
 
 
 @torch.no_grad()
@@ -295,7 +267,7 @@ class AttributionAccumulator:
         self.commit_denoising_step = torch.full((seq_len,), -2, dtype=torch.long, device=device)
 
     @torch.no_grad()
-    def commit(self, event: CommitEvent) -> None:
+    def commit(self, event: CommitRecord) -> None:
         """
         Record attribution for newly committed positions.
 
@@ -303,7 +275,7 @@ class AttributionAccumulator:
         concept state from the current forward pass.
 
         Args:
-            event: CommitEvent with positions, tokens, and concept
+            event: CommitRecord with positions, tokens, and concept
                 head outputs from this denoising step.
         """
         pos = event.positions  # [P]
@@ -450,62 +422,6 @@ class ConceptLabels:
         head = self._heads.get(concept_id, concept_type)
         prefix = "Discovered" if head == "unknown" else "Known"
         return f"{prefix}: {name}"
-
-
-def find_chunk_boundaries(
-    token_ids: list[int],
-    eoc_id: int,
-    *,
-    start_index: int = 0,
-    stop_ids: Iterable[int] | None = None,
-    include_final_chunk: bool = False,
-) -> list[tuple[int, int]]:
-    """Split ``token_ids`` into chunks at EOC and stop-token boundaries.
-
-    Each returned ``(start, end)`` pair is a half-open interval ``[start, end)``
-    into ``token_ids``. Indices are absolute (already offset by
-    ``start_index``). The boundary token at ``end``, i.e. an EOC or a stop
-    token, is NOT included in the chunk.
-
-    Args:
-        token_ids: Full list of token IDs (prompt + generation).
-        eoc_id: End-of-chunk token ID. Splits chunks; excluded from every span.
-        start_index: Index to begin scanning from. Tokens before this index are
-            ignored (e.g. to skip the prompt). Defaults to 0.
-        stop_ids: Token IDs (e.g. EOS, EOT) that terminate chunking. The chunk
-            closed by the first stop token is emitted (if non-empty); the stop
-            token and everything after it are excluded. If None, no stop
-            handling is applied.
-        include_final_chunk: If True, also emit the trailing span after the last
-            EOC when it is *not* terminated by an EOC or stop token (i.e. an
-            incomplete final chunk). Empty trailing spans are never emitted.
-            Defaults to False.
-
-    Returns:
-        List of ``(start, end)`` index pairs, one per chunk, in order.
-    """
-    stops = frozenset(stop_ids) if stop_ids is not None else frozenset()
-
-    chunks: list[tuple[int, int]] = []
-    prev = start_index
-    n = len(token_ids)
-
-    i = start_index
-    while i < n:
-        tok = token_ids[i]
-        if tok in stops:
-            if prev < i:
-                chunks.append((prev, i))
-            return chunks
-        if tok == eoc_id:
-            chunks.append((prev, i))
-            prev = i + 1
-        i += 1
-
-    if include_final_chunk and prev < n:
-        chunks.append((prev, n))
-
-    return chunks
 
 
 def chunk_attribution(
@@ -671,6 +587,7 @@ class FaithfulConceptAttributor:
         # Step callback — fires at each commit, computes attribution inline
         unknown_head_ref = unknown_head
         unk_topk = self.unknown_topk
+        commit_counter = [0]
 
         def on_commit(info: GenerationStepInfo) -> None:
             pos = info.committed_positions  # [P]
@@ -692,7 +609,8 @@ class FaithfulConceptAttributor:
             )
 
             accumulator.commit(
-                CommitEvent(
+                CommitRecord(
+                    commit_order=commit_counter[0],
                     denoising_step=info.step,
                     positions=pos,
                     token_ids=tids,
@@ -703,6 +621,7 @@ class FaithfulConceptAttributor:
                     unk_logits=u_lgt[0] if u_lgt is not None else None,
                 )
             )
+            commit_counter[0] += 1
 
         # Generate with callback
         gen_output = self.generator.generate_full(prompt, config, step_callback=on_commit)

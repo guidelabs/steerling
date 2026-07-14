@@ -6,13 +6,15 @@ import pytest
 import torch
 
 from steerling.attribution.input_attribution import (
-    CommitGroup,
-    DiffusionTrace,
     FaithfulOutputToInputAttribution,
     FaithfulOutputToInputAttributor,
     OutputToInputAttributor,
-    PositionType,
     _TraceRecorder,
+)
+from steerling.attribution.trace import (
+    CommitRecord,
+    DiffusionTrace,
+    PositionType,
 )
 from steerling.attribution.utils import resolve_baseline_token_id
 from steerling.configs.attribution import BaselineConfig, BaselineMode
@@ -39,17 +41,19 @@ def interp_generator(tiny_config, tiny_concept_config, tokenizer, device):
 def _make_trace(device, mask_id: int = 99) -> DiffusionTrace:
     """Synthetic trace: prompt len 2, 4 generated slots, position 5 never committed."""
     groups = [
-        CommitGroup(
+        CommitRecord(
             commit_order=0,
+            denoising_step=0,
             positions=torch.tensor([2, 3], device=device),
             token_ids=torch.tensor([20, 21], device=device),
-            gen_logits=torch.tensor([1.0, 1.0], device=device),
+            target_logits=torch.tensor([1.0, 1.0], device=device),
         ),
-        CommitGroup(
+        CommitRecord(
             commit_order=1,
+            denoising_step=1,
             positions=torch.tensor([4], device=device),
             token_ids=torch.tensor([22], device=device),
-            gen_logits=torch.tensor([1.0], device=device),
+            target_logits=torch.tensor([1.0], device=device),
         ),
     ]
     return DiffusionTrace(
@@ -118,8 +122,8 @@ class TestDiffusionTrace:
         )
         assert [g.commit_order for g in recorder.groups] == [0, 1]
         assert recorder.groups[0].positions.tolist() == [2, 3]
-        # gen_logits gathered from the committed tokens
-        assert recorder.groups[1].gen_logits.shape == (1,)
+        # target_logits gathered from the committed tokens
+        assert recorder.groups[1].target_logits.shape == (1,)
 
     def test_recorder_rejects_batched(self, device):
         recorder = _TraceRecorder()
@@ -151,7 +155,7 @@ class TestAggregateChunk:
             target_orders=torch.tensor([0, 0, 1], device=device),
             target_positions=torch.tensor([2, 3, 4], device=device),
             target_token_ids=torch.tensor([20, 21, 22], device=device),
-            gen_logits=torch.ones(3, device=device),
+            target_logits=torch.ones(3, device=device),
             attributions=attributions,
         )
 
