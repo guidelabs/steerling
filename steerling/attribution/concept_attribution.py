@@ -13,7 +13,7 @@ import torch
 from torch import Tensor
 
 from steerling import GenerationConfig, SteerlingGenerator
-from steerling.attribution.trace import CommitRecord
+from steerling.attribution.trace import CommitRecord, DiffusionTrace
 from steerling.attribution.utils import find_chunk_boundaries
 from steerling.inference.causal_diffusion import GenerationOutput, GenerationStepInfo
 
@@ -510,6 +510,11 @@ class FaithfulConceptAttributor:
     committed — the actual decision context with partial masking — rather
     than a post-hoc pass over the fully unmasked sequence.
 
+    After calling ``attribute()``, the recorded ``DiffusionTrace`` is
+    available as ``self.last_trace``. This can be passed directly to
+    ``FaithfulOutputToInputAttributor.attribute_from_trace()`` to get
+    input attribution without re-generating.
+
     Args:
         generator: A loaded SteerlingGenerator instance.
         concepts_path: Optional path to concept_labels.parquet for label lookup.
@@ -537,6 +542,7 @@ class FaithfulConceptAttributor:
         self.unknown_topk = unknown_topk
         self._num_known_concepts = getattr(getattr(self.backbone, "known_head", None), "n_concepts", 0)
         self.last_attribution: OutputToConceptAttribution | None = None
+        self.last_trace: DiffusionTrace | None = None
 
     @torch.no_grad()
     def attribute(
@@ -547,6 +553,11 @@ class FaithfulConceptAttributor:
     ) -> tuple[GenerationOutput, list[tuple[list[AttributionEntry], float]]]:
         """
         Generate text and capture faithful concept attribution.
+
+        After this call, ``self.last_trace`` holds the ``DiffusionTrace``
+        which can be passed to
+        ``FaithfulOutputToInputAttributor.attribute_from_trace()``
+        for input attribution without re-generating.
 
         Args:
             prompt: Input text prompt.
@@ -585,9 +596,11 @@ class FaithfulConceptAttributor:
         )
 
         # Step callback — fires at each commit, computes attribution inline
+        # and also collects CommitRecords for building a DiffusionTrace
         unknown_head_ref = unknown_head
         unk_topk = self.unknown_topk
         commit_counter = [0]
+        commit_records: list[CommitRecord] = []
 
         def on_commit(info: GenerationStepInfo) -> None:
             pos = info.committed_positions  # [P]
@@ -608,19 +621,19 @@ class FaithfulConceptAttributor:
                 k=unk_topk,
             )
 
-            accumulator.commit(
-                CommitRecord(
-                    commit_order=commit_counter[0],
-                    denoising_step=info.step,
-                    positions=pos,
-                    token_ids=tids,
-                    target_logits=target_lgt,
-                    known_indices=k_idx,
-                    known_logits=k_lgt,
-                    unk_indices=u_idx[0] if u_idx is not None else None,
-                    unk_logits=u_lgt[0] if u_lgt is not None else None,
-                )
+            record = CommitRecord(
+                commit_order=commit_counter[0],
+                denoising_step=info.step,
+                positions=pos,
+                token_ids=tids,
+                target_logits=target_lgt,
+                known_indices=k_idx,
+                known_logits=k_lgt,
+                unk_indices=u_idx[0] if u_idx is not None else None,
+                unk_logits=u_lgt[0] if u_lgt is not None else None,
             )
+            accumulator.commit(record)
+            commit_records.append(record)
             commit_counter[0] += 1
 
         # Generate with callback
@@ -629,6 +642,19 @@ class FaithfulConceptAttributor:
         # Build chunk-level results
         attr = accumulator.result()
         self.last_attribution = attr  # expose for custom chunk ranges
+
+        # Build DiffusionTrace for reuse by input attribution
+        prompt_tensor = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)
+        eos_id = int(self.generator.eos_token_id) if self.generator.eos_token_id is not None else None
+        self.last_trace = DiffusionTrace(
+            prompt_ids=prompt_tensor,
+            prompt_len=len(prompt_ids),
+            seq_length=seq_len,
+            mask_id=int(self.generator.mask_token_id),
+            eos_id=eos_id,
+            device=self.device,
+            groups=commit_records,
+        )
 
         eoc_id = getattr(self.generator.tokenizer, "endofchunk_token_id", None)
         eot_id = getattr(self.generator.tokenizer, "eot_id", None)
