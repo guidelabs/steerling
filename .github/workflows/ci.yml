@@ -36,4 +36,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv build
-      - run: uv pip install twine --system && twine check dist/*
+      - run: uv run --with twine twine check dist/*
