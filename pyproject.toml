@@ -45,9 +45,7 @@ eval = [
     "tqdm ~= 4.67.1",
 ]
 
-cde = [
-    "gl_cde"
-]
+cde = ["gl_cde"]
 
 # Notebook environment for analysis
 notebook = [
@@ -94,7 +92,7 @@ override-dependencies = ["transformers>=5.17,<5.18", "tiktoken>=0.14.0,<0.15.dev
 # PyTorch with CUDA 12.8 (GPU only)
 torch = { index = "pytorch-cu129" }
 
-gl-cde = { path = "/home/muawizc/cde_monorepo", editable = true }
+gl-cde = { git = "ssh://git@github.com/guidelabs/gl_cde.git" }
 
 [[tool.uv.index]]
 name = "pytorch-cu129"

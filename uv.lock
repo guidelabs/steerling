@@ -820,7 +820,7 @@ http = [
 [[package]]
 name = "gl-cde"
 version = "0.1.0"
-source = { editable = "/home/muawizc/cde_monorepo" }
+source = { git = "ssh://git@github.com/guidelabs/gl_cde.git#c4fef126d8d890bbd67a67c8f410d6cf8ae3833e" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "numpy" },
@@ -828,22 +828,6 @@ dependencies = [
     { name = "tiktoken" },
     { name = "transformers" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "huggingface-hub", specifier = "~=1.29.0" },
-    { name = "numpy", specifier = ">=2.5.0,<3.0.0" },
-    { name = "safetensors", specifier = "~=0.8.0" },
-    { name = "tiktoken", specifier = "~=0.14.0" },
-    { name = "torch", marker = "extra == 'cpu'", specifier = "~=2.13.0", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "gl-cde", extra = "cpu" } },
-    { name = "torch", marker = "extra == 'cuda'", specifier = "~=2.13.0", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "gl-cde", extra = "cuda" } },
-    { name = "transformers", specifier = "~=5.17.0" },
-]
-provides-extras = ["cpu", "cuda"]
-
-[package.metadata.requires-dev]
-benchmark = [{ name = "lm-eval", extras = ["math"], specifier = "~=0.4.12" }]
-ci = [{ name = "basedpyright", specifier = "~=1.39.9" }]
 
 [[package]]
 name = "h11"
@@ -3188,7 +3172,7 @@ type-check = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gl-cde", marker = "extra == 'cde'", editable = "/home/muawizc/cde_monorepo" },
+    { name = "gl-cde", marker = "extra == 'cde'", git = "ssh://git@github.com/guidelabs/gl_cde.git" },
     { name = "huggingface-hub", specifier = ">=0.20.0" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = "~=6.29.5" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = "~=8.1.5" },
